@@ -1,0 +1,25 @@
+[package]
+name = "ploteo"
+version = "0.1.0"
+description = "Local-first short drama generation orchestrator"
+authors = ["Ploteo"]
+edition = "2021"
+
+[lib]
+name = "ploteo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+dirs = "6"
+keyring = "3"
+opener = "0.8"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["fs"] }
+url = "2"
