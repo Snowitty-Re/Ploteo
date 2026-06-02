@@ -18,9 +18,13 @@ import {
   acceptEpisode,
   addActivity,
   coverage,
+  createWorkspace,
   episodeRisks,
+  isDemoWorkspace,
+  listWorkspaces,
   makeDemoState,
   markRemoteTask,
+  openWorkspace,
   prepareNextBatch,
   queueActiveBatch,
   queueEpisodeRegeneration,
@@ -42,6 +46,7 @@ import {
   querySeedanceTask,
   saveSecret,
   saveSnapshot,
+  selectProjectDirectory,
   validateProfile,
 } from "./storage";
 
@@ -87,24 +92,76 @@ function Progress({ value }: { value: number }) {
   );
 }
 
-function Onboarding({ onDemo, onCreate }: { onDemo: () => void; onCreate: () => void }) {
+function ProjectManager({
+  state,
+  canClose,
+  onClose,
+  onCreate,
+  onDemo,
+  onOpen,
+}: {
+  state: AppState;
+  canClose: boolean;
+  onClose: () => void;
+  onCreate: (name: string, directory: string) => void;
+  onDemo: () => void;
+  onOpen: (projectId: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [directory, setDirectory] = useState("");
+  const workspaces = listWorkspaces(state).filter((workspace) => !isDemoWorkspace(workspace));
+  const pickDirectory = async () => {
+    const selected = await selectProjectDirectory();
+    if (selected) setDirectory(selected);
+  };
+  const create = () => {
+    if (!name.trim() || !directory.trim()) return;
+    onCreate(name, directory);
+  };
   return (
     <main className="onboarding">
-      <section className="onboarding-card">
-        <div className="brand-mark">P</div>
-        <p className="eyebrow">PLOTEO · LOCAL-FIRST BETA</p>
-        <h1>把一个故事，编排成可控的短剧生成任务。</h1>
-        <p className="lede">
-          Ploteo 不是剪辑软件。它负责剧本、拆集、角色一致性和最多 5 集一批的视频生成闭环。
-        </p>
-        <div className="setup-grid">
-          <div><strong>01</strong><span>本地项目目录</span><small>视频和诊断文件落盘保存</small></div>
-          <div><strong>02</strong><span>模型适配器</span><small>文本、图片、Seedance 视频分离配置</small></div>
-          <div><strong>03</strong><span>系统密钥链</span><small>密钥不写入项目或 SQLite</small></div>
+      <section className="onboarding-card manager-card">
+        <div className="manager-head">
+          <div>
+            <div className="brand-mark">P</div>
+            <p className="eyebrow">PLOTEO · PROJECT MANAGER</p>
+            <h1>选择一个本地项目。</h1>
+            <p className="lede">项目内容保存在本地快照中，生成的视频落入你选择的目录。</p>
+          </div>
+          {canClose && <Button variant="quiet" onClick={onClose}>返回当前项目</Button>}
         </div>
-        <div className="button-row">
-          <Button onClick={onDemo}>载入演示项目</Button>
-          <Button variant="ghost" onClick={onCreate}>创建空白项目</Button>
+        <section className="manager-layout">
+          <div className="manager-projects">
+            <p className="eyebrow">AVAILABLE PROJECTS</p>
+            <button className="project-choice demo-choice" onClick={onDemo}>
+              <div><strong>雨夜录音机</strong><small>内置 Demo · 8 集短剧</small></div><span>打开 Demo →</span>
+            </button>
+            {workspaces.map((workspace) => (
+              <button className="project-choice" key={workspace.project.id} onClick={() => onOpen(workspace.project.id)}>
+                <div><strong>{workspace.project.name}</strong><small>{workspace.project.directory}</small></div>
+                <span>{workspace.episodes.length} 集 →</span>
+              </button>
+            ))}
+            {workspaces.length === 0 && <p className="manager-empty">还没有本地项目。先在右侧选择目录并创建一个。</p>}
+          </div>
+          <div className="new-project panel">
+            <p className="eyebrow">NEW LOCAL PROJECT</p>
+            <h2>创建空白项目</h2>
+            <label>项目名称<input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：码头来信" /></label>
+            <label>本地目录
+              <div className="directory-input">
+                <input value={directory} onChange={(event) => setDirectory(event.target.value)} placeholder="请选择一个本地目录" />
+                <Button variant="ghost" onClick={() => void pickDirectory()}>选择目录</Button>
+              </div>
+            </label>
+            <Button disabled={!name.trim() || !directory.trim()} onClick={create}>创建并进入项目</Button>
+            <small>视频结果将下载到该目录下的 `episodes` 文件夹。</small>
+          </div>
+        </section>
+        <div className="manager-foot">
+          <span>LOCAL-FIRST</span>
+          <span>密钥仅写入系统密钥链</span>
+          <span>每批最多并行 5 集</span>
         </div>
       </section>
     </main>
@@ -318,6 +375,10 @@ function BatchWorkspace({ state, setState }: { state: AppState; setState: SetApp
       setState(submitActiveBatch(state));
       return;
     }
+    if (!state.project.directory.trim()) {
+      setState(addActivity(state, "请先在项目管理器中创建带本地目录的项目", "warning"));
+      return;
+    }
     if (episodes.some((episode) => episodeRisks(state, episode).length)) {
       setState(queueActiveBatch(state));
       return;
@@ -409,7 +470,7 @@ function ResultsWorkspace({ state, setState }: { state: AppState; setState: SetA
   };
   return (
     <>
-      <header className="page-header"><div><p className="eyebrow">EPISODE REVIEW</p><h1>逐集结果</h1><p>每次生成单独保存。采用、重生成和切换历史版本不会影响其他短集。</p></div><Button variant="ghost" onClick={() => openProjectDirectory(state.project.directory)}>打开项目目录</Button></header>
+      <header className="page-header"><div><p className="eyebrow">EPISODE REVIEW</p><h1>逐集结果</h1><p>每次生成单独保存。采用、重生成和切换历史版本不会影响其他短集。</p></div><Button variant="ghost" disabled={!state.project.directory} onClick={() => openProjectDirectory(state.project.directory)}>打开项目目录</Button></header>
       {!episodes.length ? <article className="empty-stage panel"><strong>尚无视频结果</strong><p>在批次工作台提交第一批后，结果会按短集独立出现。</p></article> :
         <section className="result-grid">{episodes.map((episode) => {
           const active = episode.versions.find((version) => version.id === episode.activeVersionId) ?? episode.versions[0];
@@ -469,6 +530,7 @@ export function App() {
   const [state, setState] = useState<AppState>(initialState);
   const [ready, setReady] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
+  const [showProjectManager, setShowProjectManager] = useState(false);
 
   useEffect(() => { loadSnapshot().then((stored) => { if (stored) setState(stored); setReady(true); }); }, []);
   useEffect(() => { if (ready) void saveSnapshot(state); }, [state, ready]);
@@ -529,7 +591,30 @@ export function App() {
   const activeBatch = useMemo(() => state.batches.find((batch) => batch.status !== "completed"), [state.batches]);
 
   if (!ready) return <div className="loading">正在恢复本地项目...</div>;
-  if (!state.onboardingComplete) return <Onboarding onDemo={() => setState(makeDemoState(state))} onCreate={() => setState({ ...state, onboardingComplete: true })} />;
+  if (!state.onboardingComplete || showProjectManager) {
+    return (
+      <ProjectManager
+        state={state}
+        canClose={state.onboardingComplete}
+        onClose={() => setShowProjectManager(false)}
+        onDemo={() => {
+          setState(makeDemoState(state));
+          setShowProjectManager(false);
+          setTab("overview");
+        }}
+        onCreate={(name, directory) => {
+          setState(createWorkspace(state, name, directory));
+          setShowProjectManager(false);
+          setTab("overview");
+        }}
+        onOpen={(projectId) => {
+          setState(openWorkspace(state, projectId));
+          setShowProjectManager(false);
+          setTab("overview");
+        }}
+      />
+    );
+  }
 
   const content = {
     overview: <Overview state={state} setTab={setTab} />,
@@ -544,8 +629,9 @@ export function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="logo"><b>P</b><div><strong>Ploteo</strong><small>短剧编排器</small></div></div>
+        <button className="project-switcher" onClick={() => setShowProjectManager(true)}><small>PROJECTS</small><span>切换项目</span></button>
         <nav>{tabs.map((item) => <button className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)} key={item.id}><small>{item.hint}</small><span>{item.label}</span>{item.id === "batch" && activeBatch && <i />}</button>)}</nav>
-        <div className="sidebar-foot"><span>LOCAL PROJECT</span><strong>{state.project.name || "未命名项目"}</strong><small>{state.project.directory}</small></div>
+        <div className="sidebar-foot"><span>LOCAL PROJECT</span><strong>{state.project.name || "未命名项目"}</strong><small>{state.project.directory || "尚未选择项目目录"}</small></div>
       </aside>
       <main className="content">{content}</main>
     </div>

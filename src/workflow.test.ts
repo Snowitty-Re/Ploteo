@@ -3,9 +3,11 @@ import { initialState } from "./domain";
 import {
   acceptEpisode,
   coverage,
+  createWorkspace,
   episodeRisks,
   makeDemoState,
   markRemoteTask,
+  openWorkspace,
   prepareNextBatch,
   queueActiveBatch,
   queueEpisodeRegeneration,
@@ -100,5 +102,22 @@ describe("deterministic episode workflow", () => {
     expect(episodes.map((episode) => episode.sourceText).join("").replace(/\s/g, "")).toBe(
       script.replace(/\s/g, ""),
     );
+  });
+
+  it("keeps local workspaces when switching to the demo and back", () => {
+    const local = createWorkspace(initialState(), "本地项目", "/tmp/ploteo-local");
+    const withIdea = {
+      ...local,
+      project: { ...local.project, idea: "本地创意" },
+    };
+    const demo = makeDemoState(withIdea);
+    expect(demo.project.id).toBe("demo-project");
+    expect(demo.project.directory).toBe("");
+    const reopened = openWorkspace(demo, withIdea.project.id);
+    expect(reopened.project).toMatchObject({
+      name: "本地项目",
+      directory: "/tmp/ploteo-local",
+      idea: "本地创意",
+    });
   });
 });

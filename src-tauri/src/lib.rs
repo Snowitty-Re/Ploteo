@@ -453,9 +453,20 @@ fn expand_home(path: &str) -> PathBuf {
 
 #[tauri::command]
 fn open_project_directory(directory: String) -> Result<(), String> {
+    if directory.trim().is_empty() {
+        return Err("尚未选择项目目录".into());
+    }
     let path = expand_home(&directory);
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     opener::open(path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn select_project_directory() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("选择 Ploteo 项目目录")
+        .pick_folder()
+        .map(|path| path.display().to_string())
 }
 
 #[tauri::command]
@@ -499,6 +510,7 @@ pub fn run() {
             cancel_seedance_task,
             download_result,
             open_project_directory,
+            select_project_directory,
             export_diagnostics,
         ])
         .run(tauri::generate_context!())

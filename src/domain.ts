@@ -105,12 +105,21 @@ export interface Activity {
   tone: "info" | "success" | "warning";
 }
 
+export interface ProjectWorkspace {
+  project: Project;
+  episodes: Episode[];
+  assets: Asset[];
+  batches: Batch[];
+  activity: Activity[];
+}
+
 export interface AppState {
   onboardingComplete: boolean;
   project: Project;
   episodes: Episode[];
   assets: Asset[];
   batches: Batch[];
+  workspaces: ProjectWorkspace[];
   profiles: ModelProfile[];
   activity: Activity[];
 }
@@ -161,10 +170,10 @@ export const defaultProfiles: ModelProfile[] = [
   },
 ];
 
-export const emptyProject = (): Project => ({
+export const emptyProject = (directory = ""): Project => ({
   id: uid("project"),
   name: "",
-  directory: "~/Movies/Ploteo",
+  directory,
   idea: "",
   script: "",
   style: "都市电影感，克制自然光，真实表演",
@@ -177,6 +186,7 @@ export const initialState = (): AppState => ({
   episodes: [],
   assets: [],
   batches: [],
+  workspaces: [],
   profiles: defaultProfiles,
   activity: [],
 });

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, ModelProfile, VideoParams } from "./domain";
+import { initialState, type AppState, type ModelProfile, type VideoParams } from "./domain";
 
 const KEY = "ploteo.beta.snapshot";
 
@@ -11,17 +11,46 @@ export interface RemoteTaskState {
   error?: string;
 }
 
+function syncCurrentWorkspace(state: AppState): AppState {
+  const workspaces = state.workspaces ?? [];
+  if (!state.project.name.trim() && !state.project.directory.trim()) {
+    return { ...state, workspaces };
+  }
+  return {
+    ...state,
+    workspaces: [
+      {
+        project: state.project,
+        episodes: state.episodes,
+        assets: state.assets,
+        batches: state.batches,
+        activity: state.activity,
+      },
+      ...workspaces.filter((workspace) => workspace.project.id !== state.project.id),
+    ],
+  };
+}
+
+function hydrateSnapshot(snapshot: string): AppState {
+  const stored = JSON.parse(snapshot) as Partial<AppState>;
+  return syncCurrentWorkspace({
+    ...initialState(),
+    ...stored,
+    workspaces: stored.workspaces ?? [],
+  });
+}
+
 export async function loadSnapshot(): Promise<AppState | null> {
   if (inTauri()) {
     const snapshot = await invoke<string | null>("load_snapshot");
-    return snapshot ? (JSON.parse(snapshot) as AppState) : null;
+    return snapshot ? hydrateSnapshot(snapshot) : null;
   }
   const snapshot = localStorage.getItem(KEY);
-  return snapshot ? (JSON.parse(snapshot) as AppState) : null;
+  return snapshot ? hydrateSnapshot(snapshot) : null;
 }
 
 export async function saveSnapshot(state: AppState): Promise<void> {
-  const snapshot = JSON.stringify(state);
+  const snapshot = JSON.stringify(syncCurrentWorkspace(state));
   if (inTauri()) {
     await invoke("save_snapshot", { snapshot });
     return;
@@ -53,6 +82,11 @@ export async function exportDiagnostics(): Promise<string> {
 
 export async function openProjectDirectory(directory: string): Promise<void> {
   if (inTauri()) await invoke("open_project_directory", { directory });
+}
+
+export async function selectProjectDirectory(): Promise<string | null> {
+  if (inTauri()) return invoke<string | null>("select_project_directory");
+  return window.prompt("请输入本地项目目录")?.trim() || null;
 }
 
 export async function createSeedanceTask(

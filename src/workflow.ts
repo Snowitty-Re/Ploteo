@@ -4,6 +4,8 @@ import {
   type Batch,
   type Episode,
   type EpisodeVersion,
+  type ProjectWorkspace,
+  emptyProject,
   now,
   uid,
 } from "./domain";
@@ -112,7 +114,8 @@ export function createDemoAssets(): Asset[] {
 
 export function makeDemoState(state: AppState): AppState {
   const project = {
-    ...state.project,
+    ...emptyProject(),
+    id: "demo-project",
     name: "雨夜录音机",
     idea: "一台旧录音机把久别重逢的两人卷入父亲留下的秘密。",
     script: demoScript,
@@ -125,6 +128,7 @@ export function makeDemoState(state: AppState): AppState {
     episodes: splitScript(demoScript),
     assets: createDemoAssets(),
     batches: [],
+    workspaces: saveCurrentWorkspace(state).filter((workspace) => !isDemoWorkspace(workspace)),
     activity: [
       {
         id: uid("activity"),
@@ -133,6 +137,70 @@ export function makeDemoState(state: AppState): AppState {
         tone: "success",
       },
     ],
+  };
+}
+
+export function isDemoWorkspace(workspace: ProjectWorkspace): boolean {
+  return workspace.project.id === "demo-project"
+    || (workspace.project.name === "雨夜录音机" && workspace.project.script === demoScript);
+}
+
+export function currentWorkspace(state: AppState): ProjectWorkspace {
+  return {
+    project: state.project,
+    episodes: state.episodes,
+    assets: state.assets,
+    batches: state.batches,
+    activity: state.activity,
+  };
+}
+
+export function saveCurrentWorkspace(state: AppState): ProjectWorkspace[] {
+  const current = currentWorkspace(state);
+  if (!current.project.name.trim() && !current.project.directory.trim()) return state.workspaces;
+  return [
+    current,
+    ...state.workspaces.filter((workspace) => workspace.project.id !== current.project.id),
+  ];
+}
+
+export function listWorkspaces(state: AppState): ProjectWorkspace[] {
+  return saveCurrentWorkspace(state);
+}
+
+export function openWorkspace(state: AppState, projectId: string): AppState {
+  const workspaces = saveCurrentWorkspace(state);
+  const workspace = workspaces.find((item) => item.project.id === projectId);
+  if (!workspace) return state;
+  return {
+    ...state,
+    onboardingComplete: true,
+    ...workspace,
+    workspaces,
+  };
+}
+
+export function createWorkspace(state: AppState, name: string, directory: string): AppState {
+  const project = {
+    ...emptyProject(directory),
+    name: name.trim(),
+  };
+  return {
+    ...state,
+    onboardingComplete: true,
+    project,
+    episodes: [],
+    assets: [],
+    batches: [],
+    activity: [
+      {
+        id: uid("activity"),
+        at: now(),
+        message: "已创建本地项目",
+        tone: "success",
+      },
+    ],
+    workspaces: saveCurrentWorkspace(state),
   };
 }
 
