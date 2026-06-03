@@ -2731,6 +2731,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rfd",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
  "tauri",

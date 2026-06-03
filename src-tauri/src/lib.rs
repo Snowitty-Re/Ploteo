@@ -1,5 +1,7 @@
 use reqwest::Client;
 use rusqlite::{params, Connection};
+#[cfg(target_os = "macos")]
+use security_framework::passwords::{get_generic_password, set_generic_password};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -119,6 +121,7 @@ fn log(app: &AppHandle, level: &str, message: &str) {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn entry(secret_ref: &str) -> Result<keyring::Entry, String> {
     #[cfg(target_os = "windows")]
     {
@@ -135,24 +138,58 @@ fn missing_secret_message(secret_ref: &str) -> String {
     format!("密钥引用 {secret_ref} 尚未写入系统密钥链")
 }
 
-fn has_stored_secret(secret_ref: &str) -> Result<bool, String> {
+#[cfg(target_os = "macos")]
+fn write_secret(secret_ref: &str, secret: &str) -> Result<(), String> {
+    set_generic_password(SERVICE, secret_ref, secret.as_bytes()).map_err(|error| {
+        format!(
+            "写入 macOS 钥匙串失败，密钥引用 {secret_ref}，错误码 {}：{error}",
+            error.code()
+        )
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn write_secret(secret_ref: &str, secret: &str) -> Result<(), String> {
+    entry(secret_ref)?
+        .set_password(secret)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn read_secret(secret_ref: &str) -> Result<Option<String>, String> {
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+    match get_generic_password(SERVICE, secret_ref) {
+        Ok(secret) => String::from_utf8(secret)
+            .map(Some)
+            .map_err(|error| format!("macOS 钥匙串密钥不是有效 UTF-8：{error}")),
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+        Err(error) => Err(format!(
+            "读取 macOS 钥匙串失败，密钥引用 {secret_ref}，错误码 {}：{error}",
+            error.code()
+        )),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_secret(secret_ref: &str) -> Result<Option<String>, String> {
     match entry(secret_ref)?.get_password() {
-        Ok(secret) => Ok(!secret.trim().is_empty()),
-        Err(keyring::Error::NoEntry) => Ok(false),
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(format!(
             "无法读取系统密钥链中的密钥引用 {secret_ref}：{error}"
         )),
     }
 }
 
+fn has_stored_secret(secret_ref: &str) -> Result<bool, String> {
+    Ok(read_secret(secret_ref)?.is_some_and(|secret| !secret.trim().is_empty()))
+}
+
 fn get_secret(secret_ref: &str) -> Result<String, String> {
-    match entry(secret_ref)?.get_password() {
-        Ok(secret) if !secret.trim().is_empty() => Ok(secret),
-        Ok(_) => Err(format!("密钥引用 {secret_ref} 为空，请重新保存密钥")),
-        Err(keyring::Error::NoEntry) => Err(missing_secret_message(secret_ref)),
-        Err(error) => Err(format!(
-            "无法读取系统密钥链中的密钥引用 {secret_ref}：{error}"
-        )),
+    match read_secret(secret_ref)? {
+        Some(secret) if !secret.trim().is_empty() => Ok(secret),
+        Some(_) => Err(format!("密钥引用 {secret_ref} 为空，请重新保存密钥")),
+        None => Err(missing_secret_message(secret_ref)),
     }
 }
 
@@ -299,9 +336,7 @@ fn store_secret(app: AppHandle, secret_ref: String, secret: String) -> Result<bo
     if secret.is_empty() {
         return Err("密钥不能为空".into());
     }
-    entry(&secret_ref)?
-        .set_password(secret)
-        .map_err(|error| error.to_string())?;
+    write_secret(&secret_ref, secret)?;
     let stored = get_secret(&secret_ref)?;
     if stored != secret {
         return Err(format!(
