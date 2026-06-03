@@ -591,10 +591,13 @@ function SettingsWorkspace({ state, setState }: { state: AppState; setState: Set
   const persistSecret = async () => {
     if (!secret.trim()) return setMessage("请输入密钥。");
     try {
-      await saveSecret(profile.secretRef, secret);
+      const storedSecret = await saveSecret(profile.secretRef, secret);
+      if (!storedSecret) {
+        throw new Error(`密钥引用 ${profile.secretRef} 写入后未能读回`);
+      }
       update({ hasSecret: true });
       setSecret("");
-      setMessage(`密钥已写入系统密钥链：${profile.secretRef}`);
+      setMessage(`密钥已写入并验证系统密钥链：${profile.secretRef}`);
     } catch (error) {
       update({ hasSecret: false });
       setMessage(`密钥写入失败：${error instanceof Error ? error.message : String(error)}`);

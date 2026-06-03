@@ -58,12 +58,12 @@ export async function saveSnapshot(state: AppState): Promise<void> {
   localStorage.setItem(KEY, snapshot);
 }
 
-export async function saveSecret(secretRef: string, secret: string): Promise<void> {
+export async function saveSecret(secretRef: string, secret: string): Promise<boolean> {
   if (inTauri()) {
-    await invoke("store_secret", { secretRef, secret });
-    return;
+    return invoke<boolean>("store_secret", { secretRef, secret });
   }
   sessionStorage.setItem(`ploteo.secret.${secretRef}`, secret);
+  return true;
 }
 
 export async function hasSecret(secretRef: string): Promise<boolean> {

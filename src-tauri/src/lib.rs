@@ -120,7 +120,15 @@ fn log(app: &AppHandle, level: &str, message: &str) {
 }
 
 fn entry(secret_ref: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(SERVICE, secret_ref).map_err(|error| error.to_string())
+    #[cfg(target_os = "windows")]
+    {
+        keyring::Entry::new_with_target(&format!("{SERVICE}:{secret_ref}"), SERVICE, secret_ref)
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        keyring::Entry::new(SERVICE, secret_ref).map_err(|error| error.to_string())
+    }
 }
 
 fn missing_secret_message(secret_ref: &str) -> String {
@@ -286,19 +294,26 @@ async fn generate_image(app: AppHandle, request: AgentRequest) -> Result<String,
 }
 
 #[tauri::command]
-fn store_secret(app: AppHandle, secret_ref: String, secret: String) -> Result<(), String> {
-    if secret.trim().is_empty() {
+fn store_secret(app: AppHandle, secret_ref: String, secret: String) -> Result<bool, String> {
+    let secret = secret.trim();
+    if secret.is_empty() {
         return Err("密钥不能为空".into());
     }
     entry(&secret_ref)?
-        .set_password(&secret)
+        .set_password(secret)
         .map_err(|error| error.to_string())?;
+    let stored = get_secret(&secret_ref)?;
+    if stored != secret {
+        return Err(format!(
+            "密钥引用 {secret_ref} 写入后读回内容不一致，请重新保存"
+        ));
+    }
     log(
         &app,
         "info",
-        &format!("updated keychain reference {secret_ref}"),
+        &format!("updated and verified keychain reference {secret_ref}"),
     );
-    Ok(())
+    Ok(true)
 }
 
 #[tauri::command]
