@@ -123,10 +123,29 @@ fn entry(secret_ref: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, secret_ref).map_err(|error| error.to_string())
 }
 
+fn missing_secret_message(secret_ref: &str) -> String {
+    format!("密钥引用 {secret_ref} 尚未写入系统密钥链")
+}
+
+fn has_stored_secret(secret_ref: &str) -> Result<bool, String> {
+    match entry(secret_ref)?.get_password() {
+        Ok(secret) => Ok(!secret.trim().is_empty()),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(error) => Err(format!(
+            "无法读取系统密钥链中的密钥引用 {secret_ref}：{error}"
+        )),
+    }
+}
+
 fn get_secret(secret_ref: &str) -> Result<String, String> {
-    entry(secret_ref)?
-        .get_password()
-        .map_err(|_| format!("密钥引用 {secret_ref} 尚未写入系统密钥链"))
+    match entry(secret_ref)?.get_password() {
+        Ok(secret) if !secret.trim().is_empty() => Ok(secret),
+        Ok(_) => Err(format!("密钥引用 {secret_ref} 为空，请重新保存密钥")),
+        Err(keyring::Error::NoEntry) => Err(missing_secret_message(secret_ref)),
+        Err(error) => Err(format!(
+            "无法读取系统密钥链中的密钥引用 {secret_ref}：{error}"
+        )),
+    }
 }
 
 fn endpoint(base_url: &str, path: &str) -> String {
@@ -280,6 +299,11 @@ fn store_secret(app: AppHandle, secret_ref: String, secret: String) -> Result<()
         &format!("updated keychain reference {secret_ref}"),
     );
     Ok(())
+}
+
+#[tauri::command]
+fn has_secret(secret_ref: String) -> Result<bool, String> {
+    has_stored_secret(&secret_ref)
 }
 
 #[tauri::command]
@@ -504,6 +528,7 @@ pub fn run() {
             generate_text,
             generate_image,
             store_secret,
+            has_secret,
             validate_profile,
             create_seedance_task,
             query_seedance_task,
@@ -554,6 +579,14 @@ mod tests {
                 &json!({ "temperature": 0.8, "max_tokens": 400 }),
             ),
             json!({ "model": "demo", "temperature": 0.2, "max_tokens": 400 })
+        );
+    }
+
+    #[test]
+    fn missing_secret_message_includes_reference() {
+        assert_eq!(
+            missing_secret_message("text-default"),
+            "密钥引用 text-default 尚未写入系统密钥链"
         );
     }
 }

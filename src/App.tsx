@@ -40,10 +40,12 @@ import {
   exportDiagnostics,
   generateImage,
   generateText,
+  hasSecret,
   inTauri,
   loadSnapshot,
   openProjectDirectory,
   querySeedanceTask,
+  refreshProfileSecrets,
   saveSecret,
   saveSnapshot,
   selectProjectDirectory,
@@ -249,8 +251,30 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
     );
   };
   const generateDraft = async () => {
-    if (!textProfile?.hasSecret || !inTauri()) {
+    if (!inTauri() || !textProfile) {
       setState(addActivity(state, "编剧 Agent 需要在桌面端配置文本模型密钥", "warning"));
+      return;
+    }
+    let storedSecret = false;
+    try {
+      storedSecret = await hasSecret(textProfile.secretRef);
+    } catch (error) {
+      setState(addActivity(state, `编剧 Agent 无法读取文本模型密钥：${error instanceof Error ? error.message : String(error)}`, "warning"));
+      return;
+    }
+    if (!storedSecret) {
+      setState((current) =>
+        addActivity(
+          {
+            ...current,
+            profiles: current.profiles.map((profile) =>
+              profile.id === textProfile.id ? { ...profile, hasSecret: false } : profile,
+            ),
+          },
+          `编剧 Agent 需要先保存文本模型密钥（引用 ${textProfile.secretRef}）`,
+          "warning",
+        ),
+      );
       return;
     }
     if (!state.project.idea.trim()) {
@@ -320,8 +344,30 @@ function AssetsWorkspace({ state, setState }: { state: AppState; setState: SetAp
     reader.readAsDataURL(file);
   };
   const generateCandidate = async (asset: Asset) => {
-    if (!imageProfile?.hasSecret || !inTauri()) {
+    if (!inTauri() || !imageProfile) {
       setState(addActivity(state, "图片 Agent 需要在桌面端配置图片模型密钥", "warning"));
+      return;
+    }
+    let storedSecret = false;
+    try {
+      storedSecret = await hasSecret(imageProfile.secretRef);
+    } catch (error) {
+      setState(addActivity(state, `图片 Agent 无法读取图片模型密钥：${error instanceof Error ? error.message : String(error)}`, "warning"));
+      return;
+    }
+    if (!storedSecret) {
+      setState((current) =>
+        addActivity(
+          {
+            ...current,
+            profiles: current.profiles.map((profile) =>
+              profile.id === imageProfile.id ? { ...profile, hasSecret: false } : profile,
+            ),
+          },
+          `图片 Agent 需要先保存图片模型密钥（引用 ${imageProfile.secretRef}）`,
+          "warning",
+        ),
+      );
       return;
     }
     setGenerating(asset.id);
@@ -371,8 +417,30 @@ function BatchWorkspace({ state, setState }: { state: AppState; setState: SetApp
   const updatePrompt = (id: string, prompt: string) =>
     setState({ ...state, episodes: state.episodes.map((episode) => episode.id === id ? { ...episode, prompt } : episode) });
   const submit = async () => {
-    if (!videoProfile?.hasSecret || !inTauri()) {
+    if (!inTauri() || !videoProfile) {
       setState(submitActiveBatch(state));
+      return;
+    }
+    let storedSecret = false;
+    try {
+      storedSecret = await hasSecret(videoProfile.secretRef);
+    } catch (error) {
+      setState(addActivity(state, `视频任务无法读取视频模型密钥：${error instanceof Error ? error.message : String(error)}`, "warning"));
+      return;
+    }
+    if (!storedSecret) {
+      setState((current) =>
+        addActivity(
+          {
+            ...current,
+            profiles: current.profiles.map((profile) =>
+              profile.id === videoProfile.id ? { ...profile, hasSecret: false } : profile,
+            ),
+          },
+          `视频任务需要先保存视频模型密钥（引用 ${videoProfile.secretRef}）`,
+          "warning",
+        ),
+      );
       return;
     }
     if (!state.project.directory.trim()) {
@@ -448,8 +516,30 @@ function ResultsWorkspace({ state, setState }: { state: AppState; setState: SetA
     setState((current) => markRemoteTask(current, episode.id, version.id, { status: "canceled" }));
   };
   const regenerate = async (episode: Episode) => {
-    if (!videoProfile?.hasSecret || !inTauri()) {
+    if (!inTauri() || !videoProfile) {
       setState(regenerateEpisode(state, episode.id));
+      return;
+    }
+    let storedSecret = false;
+    try {
+      storedSecret = await hasSecret(videoProfile.secretRef);
+    } catch (error) {
+      setState(addActivity(state, `视频重生成无法读取视频模型密钥：${error instanceof Error ? error.message : String(error)}`, "warning"));
+      return;
+    }
+    if (!storedSecret) {
+      setState((current) =>
+        addActivity(
+          {
+            ...current,
+            profiles: current.profiles.map((profile) =>
+              profile.id === videoProfile.id ? { ...profile, hasSecret: false } : profile,
+            ),
+          },
+          `视频重生成需要先保存视频模型密钥（引用 ${videoProfile.secretRef}）`,
+          "warning",
+        ),
+      );
       return;
     }
     const queued = queueEpisodeRegeneration(state, episode.id);
@@ -494,16 +584,35 @@ function SettingsWorkspace({ state, setState }: { state: AppState; setState: Set
   const [active, setActive] = useState(state.profiles[2]?.id ?? "");
   const profile = state.profiles.find((item) => item.id === active) ?? state.profiles[0];
   const update = (patch: Partial<ModelProfile>) =>
-    setState({ ...state, profiles: state.profiles.map((item) => item.id === profile.id ? { ...item, ...patch } : item) });
+    setState((current) => ({
+      ...current,
+      profiles: current.profiles.map((item) => item.id === profile.id ? { ...item, ...patch } : item),
+    }));
   const persistSecret = async () => {
     if (!secret.trim()) return setMessage("请输入密钥。");
-    await saveSecret(profile.secretRef, secret);
-    update({ hasSecret: true });
-    setSecret("");
-    setMessage("密钥已写入系统密钥链。");
+    try {
+      await saveSecret(profile.secretRef, secret);
+      update({ hasSecret: true });
+      setSecret("");
+      setMessage(`密钥已写入系统密钥链：${profile.secretRef}`);
+    } catch (error) {
+      update({ hasSecret: false });
+      setMessage(`密钥写入失败：${error instanceof Error ? error.message : String(error)}`);
+    }
   };
   const validate = async () => {
-    try { setMessage(await validateProfile(profile)); } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    try {
+      const storedSecret = await hasSecret(profile.secretRef);
+      update({ hasSecret: storedSecret });
+      if (!storedSecret) {
+        setMessage(`密钥引用 ${profile.secretRef} 尚未写入系统密钥链。请先输入密钥并保存。`);
+        return;
+      }
+      setMessage(await validateProfile({ ...profile, hasSecret: storedSecret }));
+    } catch (error) {
+      update({ hasSecret: false });
+      setMessage(error instanceof Error ? error.message : String(error));
+    }
   };
   return (
     <>
@@ -532,7 +641,30 @@ export function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const [showProjectManager, setShowProjectManager] = useState(false);
 
-  useEffect(() => { loadSnapshot().then((stored) => { if (stored) setState(stored); setReady(true); }); }, []);
+  useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      let restored = (await loadSnapshot()) ?? initialState();
+      if (inTauri()) {
+        try {
+          restored = { ...restored, profiles: await refreshProfileSecrets(restored.profiles) };
+        } catch (error) {
+          restored = addActivity(
+            restored,
+            `系统密钥链状态同步失败：${error instanceof Error ? error.message : String(error)}`,
+            "warning",
+          );
+        }
+      }
+      if (!disposed) {
+        setState(restored);
+        setReady(true);
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
   useEffect(() => { if (ready) void saveSnapshot(state); }, [state, ready]);
   useEffect(() => {
     if (!ready || !inTauri()) return;

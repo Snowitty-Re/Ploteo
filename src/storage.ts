@@ -66,6 +66,22 @@ export async function saveSecret(secretRef: string, secret: string): Promise<voi
   sessionStorage.setItem(`ploteo.secret.${secretRef}`, secret);
 }
 
+export async function hasSecret(secretRef: string): Promise<boolean> {
+  if (inTauri()) {
+    return invoke<boolean>("has_secret", { secretRef });
+  }
+  return Boolean(sessionStorage.getItem(`ploteo.secret.${secretRef}`));
+}
+
+export async function refreshProfileSecrets(profiles: ModelProfile[]): Promise<ModelProfile[]> {
+  return Promise.all(
+    profiles.map(async (profile) => ({
+      ...profile,
+      hasSecret: await hasSecret(profile.secretRef),
+    })),
+  );
+}
+
 export async function validateProfile(profile: ModelProfile): Promise<string> {
   if (inTauri()) {
     return invoke<string>("validate_profile", { profile });
