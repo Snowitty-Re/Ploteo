@@ -26,6 +26,22 @@ pnpm tauri dev
 
 浏览器预览模式使用 `localStorage` 保存快照，密钥只保存在当前浏览器会话。Tauri 桌面模式使用 SQLite 和系统密钥链。
 
+## GitHub Actions 发布
+
+仓库包含两个 workflow：
+
+- `Desktop CI`：在 `main`、PR 和手动触发时运行前端测试、前端构建，以及 macOS / Windows Rust 测试。
+- `Release Desktop Apps`：手动触发或推送 `v*` / `ploteo-v*` tag 时构建 Windows 10+ 与 macOS 包，并上传到 GitHub Release。
+
+手动发布时，在 GitHub 的 Actions 页面运行 `Release Desktop Apps`。默认会创建 draft prerelease，确认产物后再发布。推送 tag 时会直接按 tag 创建 Release：
+
+```bash
+git tag ploteo-v0.1.0
+git push origin ploteo-v0.1.0
+```
+
+当前 Beta 构建未做 Windows 代码签名，也未做 macOS 公证。
+
 ## 工作流
 
 1. 首次启动进入项目管理器。可以载入演示项目，或手动选择本地目录并创建空白项目。

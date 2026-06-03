@@ -1,0 +1,93 @@
+name: Release Desktop Apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: Create the GitHub Release as a draft
+        required: true
+        type: boolean
+        default: true
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - v*
+      - ploteo-v*
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            platform: windows-latest
+            args: ""
+            rust-targets: ""
+          - label: macOS Intel
+            platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust-targets: x86_64-apple-darwin,aarch64-apple-darwin
+          - label: macOS Apple Silicon
+            platform: macos-latest
+            args: --target aarch64-apple-darwin
+            rust-targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and upload desktop bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'ploteo-v__VERSION__' }}
+          releaseName: Ploteo v__VERSION__
+          releaseBody: |
+            Ploteo desktop beta build.
+
+            Assets include Windows 10+ installers and macOS bundles.
+            These builds are currently unsigned and not notarized.
+          releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          uploadUpdaterJson: false
+          retryAttempts: 2
+          args: ${{ matrix.args }}
