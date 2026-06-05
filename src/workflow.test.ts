@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 import { initialState } from "./domain";
 import {
   acceptEpisode,
+  buildPlannerPrompt,
+  buildWriterPrompt,
   coverage,
   createWorkspace,
+  deleteWorkspace,
   episodeRisks,
   makeDemoState,
   markRemoteTask,
   openWorkspace,
+  parseEpisodePlan,
   prepareNextBatch,
   queueActiveBatch,
   queueEpisodeRegeneration,
@@ -119,5 +123,59 @@ describe("deterministic episode workflow", () => {
       directory: "/tmp/ploteo-local",
       idea: "本地创意",
     });
+  });
+
+  it("deletes a local workspace without deleting other projects", () => {
+    const first = createWorkspace(initialState(), "项目 A", "/tmp/a");
+    const second = createWorkspace(first, "项目 B", "/tmp/b");
+    const deleted = deleteWorkspace(second, first.project.id);
+    expect(deleted.workspaces.some((workspace) => workspace.project.id === first.project.id)).toBe(false);
+    expect(deleted.project.name).toBe("项目 B");
+  });
+
+  it("builds writer and planner prompts with explicit production constraints", () => {
+    const state = createWorkspace(initialState(), "测试项目", "/tmp/ploteo");
+    const project = {
+      ...state.project,
+      idea: "少女在废弃剧院发现会说话的紫色星尘",
+      targetEpisodes: 12,
+      contentLength: "短篇，节奏快，每集强钩子",
+      style: "二次元紫色幻想",
+      script: "完整剧本正文",
+    };
+    expect(buildWriterPrompt(project)).toContain("目标短集数：12 集");
+    expect(buildWriterPrompt(project)).toContain("二次元紫色幻想");
+    expect(buildPlannerPrompt(project)).toContain("只输出 JSON");
+    expect(buildPlannerPrompt(project)).toContain("shotList");
+  });
+
+  it("parses structured planner JSON into professional episode records", () => {
+    const episodes = parseEpisodePlan(JSON.stringify({
+      episodes: [
+        {
+          number: 1,
+          title: "开场",
+          sourceText: "少女走进剧院。",
+          summary: "少女发现紫色星尘。",
+          scene: "废弃剧院",
+          characters: ["少女", "星尘"],
+          dialogue: "星尘：别开灯。",
+          rhythm: "悬念开场",
+          continuity: "建立剧院与星尘",
+          duration: 9,
+          shotList: ["推门近景", "星尘漂浮特写"],
+          prompt: "竖屏镜头，少女推门，星尘漂浮，同步环境音。",
+        },
+      ],
+    }));
+    expect(episodes).toHaveLength(1);
+    expect(episodes[0]).toMatchObject({
+      title: "开场",
+      scene: "废弃剧院",
+      duration: 9,
+      characters: ["少女", "星尘"],
+      status: "draft",
+    });
+    expect(episodes[0].prompt).toContain("同步环境音");
   });
 });

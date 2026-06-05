@@ -94,6 +94,8 @@ export interface Project {
   idea: string;
   script: string;
   style: string;
+  targetEpisodes: number;
+  contentLength: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -177,6 +179,8 @@ export const emptyProject = (directory = ""): Project => ({
   idea: "",
   script: "",
   style: "都市电影感，克制自然光，真实表演",
+  targetEpisodes: 8,
+  contentLength: "中等篇幅，每集 4~15 秒，整体适合内部测试短剧生成",
   createdAt: now(),
   updatedAt: now(),
 });

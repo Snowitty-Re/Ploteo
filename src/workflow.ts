@@ -4,6 +4,7 @@ import {
   type Batch,
   type Episode,
   type EpisodeVersion,
+  type Project,
   type ProjectWorkspace,
   emptyProject,
   now,
@@ -72,6 +73,139 @@ export function splitScript(script: string): Episode[] {
       versions: [],
     };
   });
+}
+
+function asString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
+function asNumber(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function extractJson(raw: string): unknown {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const source = fenced?.[1] ?? raw;
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    throw new Error("短剧策划 Agent 未返回 JSON 对象");
+  }
+  return JSON.parse(source.slice(start, end + 1));
+}
+
+export function buildWriterPrompt(project: Project): string {
+  return [
+    "你是 Ploteo 的编剧 Agent。请根据用户创意生成一份完整、可拍摄、可被后续短剧策划 Agent 结构化拆集的短剧剧本。",
+    "",
+    "硬性要求：",
+    `- 目标短集数：${project.targetEpisodes || 8} 集。`,
+    "- 每集最终视频时长为 4~15 秒，所以剧情节点必须短、明确、可视化。",
+    `- 内容长短：${project.contentLength || "中等篇幅"}`,
+    `- 统一风格：${project.style || "真实电影感"}`,
+    "- 输出必须包含完整剧情，不要只给大纲。",
+    "- 每个剧情节点要包含场景、人物动作、关键对白和钩子，方便后续拆成短集。",
+    "- 不要解释生成过程。",
+    "",
+    "建议输出结构：",
+    "1. 剧名",
+    "2. 世界观与主要角色",
+    "3. 完整剧本正文，按自然剧情节点分段，每段可对应 1 个 4~15 秒短集",
+    "",
+    `用户创意：${project.idea}`,
+  ].join("\n");
+}
+
+export function buildPlannerPrompt(project: Project): string {
+  return [
+    "你是 Ploteo 的短剧策划 Agent。请把完整剧本自然拆成短集，并为每集生成导演可用的信息。",
+    "",
+    "硬性要求：",
+    `- 目标短集数：尽量为 ${project.targetEpisodes || 8} 集；如果剧情自然需要，可以略微增减，但必须完整覆盖原始剧本。`,
+    "- 每集 duration 必须是 4 到 15 秒之间的整数。",
+    "- 每集必须包含 sourceText、summary、scene、characters、dialogue、rhythm、continuity、shotList、prompt。",
+    "- prompt 必须可直接给视频模型使用，包含镜头、角色、动作、对白、环境音、音效/配乐意图。",
+    "- 不要本地剪辑思维，不要字幕文件，不要 TTS。声音由视频模型原生生成。",
+    "- 只输出 JSON，不要 Markdown，不要解释。",
+    "",
+    "JSON Schema：",
+    "{",
+    '  "episodes": [',
+    "    {",
+    '      "number": 1,',
+    '      "title": "第 1 集",',
+    '      "sourceText": "覆盖的原剧本文字",',
+    '      "summary": "本集剧情",',
+    '      "scene": "场景",',
+    '      "characters": ["角色A"],',
+    '      "dialogue": "对白或无对白说明",',
+    '      "rhythm": "节奏和钩子",',
+    '      "continuity": "与前后集的连续性要求",',
+    '      "duration": 8,',
+    '      "shotList": ["镜头1", "镜头2"],',
+    '      "prompt": "视频生成 Prompt"',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    `统一风格：${project.style || "真实电影感"}`,
+    `内容长短：${project.contentLength || "中等篇幅"}`,
+    "",
+    "完整剧本：",
+    project.script,
+  ].join("\n");
+}
+
+export function parseEpisodePlan(raw: string): Episode[] {
+  const parsed = extractJson(raw) as { episodes?: unknown[] };
+  const episodes = Array.isArray(parsed.episodes) ? parsed.episodes : [];
+  if (!episodes.length) {
+    throw new Error("短剧策划 Agent 返回的 episodes 为空");
+  }
+  return episodes.map((item, index) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const sourceText = asString(record.sourceText) || asString(record.summary, `第 ${index + 1} 集剧情`);
+    const summary = asString(record.summary, sourceText);
+    const scene = asString(record.scene, "未指定场景");
+    const characters = Array.isArray(record.characters)
+      ? record.characters.map((character) => asString(character)).filter(Boolean)
+      : [];
+    const dialogue = asString(record.dialogue, "以动作和短对白推进剧情");
+    const rhythm = asString(record.rhythm, "短促推进，结尾留钩子");
+    const continuity = asString(record.continuity, index === 0 ? "建立角色、场景和核心道具" : `承接第 ${index} 集`);
+    const shotList = Array.isArray(record.shotList)
+      ? record.shotList.map((shot) => asString(shot)).filter(Boolean)
+      : [];
+    const duration = Math.max(4, Math.min(15, Math.round(asNumber(record.duration, 8))));
+    const prompt = asString(record.prompt) || [
+      `竖屏短剧镜头，${scene}。`,
+      summary,
+      shotList.length ? `分镜：${shotList.join("；")}` : "",
+      `角色：${characters.join("、") || "按剧本角色"}`,
+      `对白：${dialogue}`,
+      `连续性：${continuity}`,
+      "生成同步对白、环境音效和克制的背景音乐。",
+    ].filter(Boolean).join("\n");
+    const episode: Episode = {
+      id: uid("episode"),
+      number: Math.max(1, Math.round(asNumber(record.number, index + 1))),
+      title: asString(record.title, `第 ${index + 1} 集`),
+      sourceText,
+      summary,
+      scene,
+      characters,
+      dialogue,
+      rhythm,
+      continuity,
+      duration,
+      prompt,
+      status: "draft",
+      versions: [],
+    };
+    return episode;
+  }).sort((left, right) => left.number - right.number)
+    .map((episode, index) => ({ ...episode, number: index + 1 }));
 }
 
 const preview = (hue: number) =>
@@ -201,6 +335,30 @@ export function createWorkspace(state: AppState, name: string, directory: string
       },
     ],
     workspaces: saveCurrentWorkspace(state),
+  };
+}
+
+export function deleteWorkspace(state: AppState, projectId: string): AppState {
+  const workspaces = saveCurrentWorkspace(state).filter((workspace) => workspace.project.id !== projectId);
+  if (state.project.id !== projectId) {
+    return addActivity({ ...state, workspaces }, "已从项目管理器移除项目", "success");
+  }
+  return {
+    ...state,
+    onboardingComplete: false,
+    project: emptyProject(),
+    episodes: [],
+    assets: [],
+    batches: [],
+    workspaces,
+    activity: [
+      {
+        id: uid("activity"),
+        at: now(),
+        message: "已删除当前项目，请选择或创建项目",
+        tone: "success",
+      },
+    ],
   };
 }
 

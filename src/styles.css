@@ -111,6 +111,8 @@ textarea { resize: vertical; padding: 11px; line-height: 1.7; font-size: 12px; m
 .episode-head { display: grid; grid-template-columns: 39px 1fr auto; gap: 10px; align-items: start; margin-bottom: 11px; }
 .episode-head > b { color: var(--acid); font: 500 19px "SFMono-Regular", Consolas, monospace; }
 .episode-head small { font-size: 11px; line-height: 1.5; display: block; margin-top: 3px; }
+.episode-meta { display: grid; gap: 4px; margin: 8px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.episode-meta strong { color: var(--acid); font: 500 10px "SFMono-Regular", Consolas, monospace; letter-spacing: .8px; }
 .compact-grid { display: grid; grid-template-columns: 90px 1fr; gap: 8px; margin-top: 8px; }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
 input, select { height: 34px; padding: 0 9px; font-size: 12px; }
@@ -171,6 +173,10 @@ input, select { height: 34px; padding: 0 9px; font-size: 12px; }
 .project-choice div { display: grid; gap: 5px; }
 .project-choice small { max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-choice span { color: var(--acid); font-size: 11px; white-space: nowrap; }
+.project-choice-row { padding: 8px; }
+.project-choice-row:hover { transform: none; }
+.project-open { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 15px; min-width: 0; color: var(--text); text-align: left; border: 0; background: transparent; padding: 7px; }
+.project-open:hover { color: var(--acid); }
 .demo-choice { border-color: rgba(201, 156, 255, .45); background: linear-gradient(90deg, rgba(105, 55, 166, .48), rgba(201, 156, 255, .08)); }
 .manager-empty { padding: 16px; color: var(--muted); border: 1px dashed var(--line); font-size: 12px; line-height: 1.7; }
 .new-project { display: grid; gap: 14px; padding: 17px; }

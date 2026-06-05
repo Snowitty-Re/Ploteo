@@ -17,19 +17,22 @@ import {
 import {
   acceptEpisode,
   addActivity,
+  buildPlannerPrompt,
+  buildWriterPrompt,
   coverage,
   createWorkspace,
+  deleteWorkspace,
   episodeRisks,
   isDemoWorkspace,
   listWorkspaces,
   makeDemoState,
   markRemoteTask,
   openWorkspace,
+  parseEpisodePlan,
   prepareNextBatch,
   queueActiveBatch,
   queueEpisodeRegeneration,
   regenerateEpisode,
-  splitScript,
   submitActiveBatch,
   switchVersion,
 } from "./workflow";
@@ -99,6 +102,7 @@ function ProjectManager({
   canClose,
   onClose,
   onCreate,
+  onDelete,
   onDemo,
   onOpen,
 }: {
@@ -106,6 +110,7 @@ function ProjectManager({
   canClose: boolean;
   onClose: () => void;
   onCreate: (name: string, directory: string) => void;
+  onDelete: (projectId: string) => void;
   onDemo: () => void;
   onOpen: (projectId: string) => void;
 }) {
@@ -139,10 +144,22 @@ function ProjectManager({
               <div><strong>雨夜录音机</strong><small>内置 Demo · 8 集短剧</small></div><span>打开 Demo →</span>
             </button>
             {workspaces.map((workspace) => (
-              <button className="project-choice" key={workspace.project.id} onClick={() => onOpen(workspace.project.id)}>
-                <div><strong>{workspace.project.name}</strong><small>{workspace.project.directory}</small></div>
-                <span>{workspace.episodes.length} 集 →</span>
-              </button>
+              <div className="project-choice project-choice-row" key={workspace.project.id}>
+                <button className="project-open" onClick={() => onOpen(workspace.project.id)}>
+                  <div><strong>{workspace.project.name}</strong><small>{workspace.project.directory}</small></div>
+                  <span>{workspace.episodes.length} 集 →</span>
+                </button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    if (window.confirm(`删除项目“${workspace.project.name}”？这只会移除 Ploteo 的本地项目记录，不会删除你选择的磁盘目录。`)) {
+                      onDelete(workspace.project.id);
+                    }
+                  }}
+                >
+                  删除
+                </Button>
+              </div>
             ))}
             {workspaces.length === 0 && <p className="manager-empty">还没有本地项目。先在右侧选择目录并创建一个。</p>}
           </div>
@@ -231,14 +248,37 @@ function Overview({ state, setTab }: { state: AppState; setTab: (tab: Tab) => vo
 
 function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAppState }) {
   const [generating, setGenerating] = useState(false);
+  const [planning, setPlanning] = useState(false);
   const result = coverage(state);
   const textProfile = state.profiles.find((profile) => profile.capability === "text");
-  const split = () => {
-    const episodes = splitScript(state.project.script);
-    setState(addActivity({ ...state, episodes, batches: [] }, `已按剧情自然拆分为 ${episodes.length} 集`, "success"));
-  };
   const updateEpisode = (id: string, patch: Partial<Episode>) =>
     setState({ ...state, episodes: state.episodes.map((episode) => episode.id === id ? { ...episode, ...patch } : episode) });
+  const requireTextSecret = async (label: string) => {
+    if (!inTauri() || !textProfile) {
+      setState(addActivity(state, `${label} 需要在桌面端配置文本模型密钥`, "warning"));
+      return false;
+    }
+    try {
+      const storedSecret = await hasSecret(textProfile.secretRef);
+      if (storedSecret) return true;
+      setState((current) =>
+        addActivity(
+          {
+            ...current,
+            profiles: current.profiles.map((profile) =>
+              profile.id === textProfile.id ? { ...profile, hasSecret: false } : profile,
+            ),
+          },
+          `${label} 需要先保存文本模型密钥（引用 ${textProfile.secretRef}）`,
+          "warning",
+        ),
+      );
+      return false;
+    } catch (error) {
+      setState(addActivity(state, `${label} 无法读取文本模型密钥：${error instanceof Error ? error.message : String(error)}`, "warning"));
+      return false;
+    }
+  };
   const importScript = async (file?: File) => {
     if (!file) return;
     const script = await file.text();
@@ -251,32 +291,7 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
     );
   };
   const generateDraft = async () => {
-    if (!inTauri() || !textProfile) {
-      setState(addActivity(state, "编剧 Agent 需要在桌面端配置文本模型密钥", "warning"));
-      return;
-    }
-    let storedSecret = false;
-    try {
-      storedSecret = await hasSecret(textProfile.secretRef);
-    } catch (error) {
-      setState(addActivity(state, `编剧 Agent 无法读取文本模型密钥：${error instanceof Error ? error.message : String(error)}`, "warning"));
-      return;
-    }
-    if (!storedSecret) {
-      setState((current) =>
-        addActivity(
-          {
-            ...current,
-            profiles: current.profiles.map((profile) =>
-              profile.id === textProfile.id ? { ...profile, hasSecret: false } : profile,
-            ),
-          },
-          `编剧 Agent 需要先保存文本模型密钥（引用 ${textProfile.secretRef}）`,
-          "warning",
-        ),
-      );
-      return;
-    }
+    if (!await requireTextSecret("编剧 Agent")) return;
     if (!state.project.idea.trim()) {
       setState(addActivity(state, "请先填写故事创意", "warning"));
       return;
@@ -284,8 +299,8 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
     setGenerating(true);
     try {
       const script = await generateText(
-        textProfile,
-        `请根据以下创意创作一份完整短剧剧本。情节紧凑，适合自然拆成多个 4~15 秒短集，明确场景、动作和对白。\n\n创意：${state.project.idea}`,
+        textProfile!,
+        buildWriterPrompt(state.project),
       );
       setState((current) =>
         addActivity(
@@ -300,17 +315,45 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
       setGenerating(false);
     }
   };
+  const split = async () => {
+    if (!await requireTextSecret("短剧策划 Agent")) return;
+    if (!state.project.script.trim()) {
+      setState(addActivity(state, "请先生成或导入完整剧本", "warning"));
+      return;
+    }
+    setPlanning(true);
+    try {
+      const raw = await generateText(textProfile!, buildPlannerPrompt(state.project));
+      const episodes = parseEpisodePlan(raw);
+      setState((current) =>
+        addActivity(
+          { ...current, episodes, batches: [] },
+          `短剧策划 Agent 已拆分为 ${episodes.length} 集，并生成分镜、连续性和视频 Prompt`,
+          "success",
+        ),
+      );
+    } catch (error) {
+      setState((current) => addActivity(current, `短剧策划 Agent 请求失败：${error instanceof Error ? error.message : String(error)}`, "warning"));
+    } finally {
+      setPlanning(false);
+    }
+  };
 
   return (
     <>
       <header className="page-header">
-        <div><p className="eyebrow">SCRIPT PLANNER</p><h1>剧本与自然拆集</h1><p>完整剧本是唯一来源。拆集结果可编辑，并持续检查覆盖完整性。</p></div>
-        <div className="button-row"><Button variant="ghost" disabled={generating} onClick={() => void generateDraft()}>{generating ? "正在生成..." : "编剧 Agent 生成"}</Button><label className="upload-button">导入文本剧本<input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => void importScript(event.target.files?.[0])} /></label><Button onClick={split}>重新自然拆集</Button></div>
+        <div><p className="eyebrow">SCRIPT PLANNER</p><h1>剧本与自然拆集</h1><p>编剧 Agent 生成完整剧本；短剧策划 Agent 调用文本模型拆集并输出分镜、连续性和视频 Prompt。</p></div>
+        <div className="button-row"><Button variant="ghost" disabled={generating} onClick={() => void generateDraft()}>{generating ? "正在生成..." : "编剧 Agent 生成"}</Button><label className="upload-button">导入文本剧本<input type="file" accept=".txt,.md,text/plain,text/markdown" onChange={(event) => void importScript(event.target.files?.[0])} /></label><Button disabled={planning} onClick={() => void split()}>{planning ? "拆集中..." : "短剧策划 Agent 拆集"}</Button></div>
       </header>
       <section className="script-layout">
         <article className="panel script-editor">
           <div className="section-title"><h2>完整剧本</h2><Badge tone={state.project.script ? "success" : "warning"}>{state.project.script ? "已导入" : "待输入"}</Badge></div>
           <label className="idea-field">故事创意<input value={state.project.idea} onChange={(event) => setState({ ...state, project: { ...state.project, idea: event.target.value, updatedAt: now() } })} placeholder="一句话描述故事核心冲突" /></label>
+          <div className="compact-grid">
+            <label>目标集数<input type="number" min="1" max="80" value={state.project.targetEpisodes ?? 8} onChange={(event) => setState({ ...state, project: { ...state.project, targetEpisodes: Number(event.target.value), updatedAt: now() } })} /></label>
+            <label>内容长短<input value={state.project.contentLength ?? ""} onChange={(event) => setState({ ...state, project: { ...state.project, contentLength: event.target.value, updatedAt: now() } })} placeholder="例如：12 集，每集强钩子，整体中等篇幅" /></label>
+          </div>
+          <label>统一风格<input value={state.project.style} onChange={(event) => setState({ ...state, project: { ...state.project, style: event.target.value, updatedAt: now() } })} placeholder="例如：二次元紫色幻想、赛博悬疑、都市电影感" /></label>
           <textarea value={state.project.script} onChange={(event) => setState({ ...state, project: { ...state.project, script: event.target.value, updatedAt: now() } })} placeholder="输入创意生成的剧本，或在此粘贴完整剧本..." />
           <div className="coverage">
             <div><span>覆盖检查</span><strong>{result.complete ? "完整覆盖" : "需要重新拆集"}</strong></div>
@@ -323,7 +366,10 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
             <article className="panel episode-card" key={episode.id}>
               <div className="episode-head"><b>{String(episode.number).padStart(2, "0")}</b><div><h3>{episode.title}</h3><small>{episode.scene} · {episode.rhythm}</small></div><Badge tone={episode.duration >= 4 && episode.duration <= 15 ? "success" : "warning"}>{episode.duration} 秒</Badge></div>
               <textarea value={episode.summary} onChange={(event) => updateEpisode(episode.id, { summary: event.target.value })} />
+              <p className="episode-meta"><strong>对白</strong>{episode.dialogue}</p>
+              <p className="episode-meta"><strong>连续性</strong>{episode.continuity}</p>
               <div className="compact-grid"><label>时长<input type="number" min="4" max="15" value={episode.duration} onChange={(event) => updateEpisode(episode.id, { duration: Number(event.target.value) })} /></label><label>场景<input value={episode.scene} onChange={(event) => updateEpisode(episode.id, { scene: event.target.value })} /></label></div>
+              <label>视频 Prompt<textarea value={episode.prompt} onChange={(event) => updateEpisode(episode.id, { prompt: event.target.value })} /></label>
             </article>
           ))}
         </section>
@@ -740,6 +786,11 @@ export function App() {
         onCreate={(name, directory) => {
           setState(createWorkspace(state, name, directory));
           setShowProjectManager(false);
+          setTab("overview");
+        }}
+        onDelete={(projectId) => {
+          setState(deleteWorkspace(state, projectId));
+          setShowProjectManager(true);
           setTab("overview");
         }}
         onOpen={(projectId) => {
