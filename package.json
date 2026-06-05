@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "build:pi-sidecar": "bun build --compile scripts/pi-agent-sidecar.mjs --outfile src-tauri/binaries/ploteo-pi-agent",
+    "build:pi-sidecar": "node scripts/build-pi-sidecar.mjs",
     "test:pi-sidecar": "node scripts/pi-agent-sidecar.mjs --healthcheck",
+    "test:pi-sidecar:compiled": "node scripts/test-compiled-sidecar.mjs",
     "test": "vitest run",
     "tauri": "tauri"
   },

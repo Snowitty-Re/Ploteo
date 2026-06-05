@@ -8,12 +8,16 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
 use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 const CREATE_TASK_PATH: &str = "/api/v3/contents/generations/tasks";
+const PROJECT_MARKER: &str = ".ploteo-project.json";
+const PI_AGENT_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +96,9 @@ fn app_dir(app: &AppHandle) -> Result<PathBuf, String> {
 fn db(app: &AppHandle) -> Result<Connection, String> {
     let connection =
         Connection::open(app_dir(app)?.join("ploteo.sqlite")).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(Duration::from_secs(10))
+        .map_err(|error| error.to_string())?;
     let legacy_entities = connection
         .prepare("PRAGMA table_info(episodes)")
         .and_then(|mut statement| {
@@ -120,6 +127,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
         .execute_batch(
             "
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS app_snapshot (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -296,7 +304,9 @@ fn pi_agent_command(app: &AppHandle) -> Result<Command, String> {
         .join("binaries")
         .join(executable_name);
     if bundled.exists() {
-        return Ok(Command::new(bundled));
+        let mut command = Command::new(bundled);
+        configure_background_process(&mut command);
+        return Ok(command);
     }
     if cfg!(debug_assertions) {
         let script = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -305,10 +315,20 @@ fn pi_agent_command(app: &AppHandle) -> Result<Command, String> {
             .join("scripts/pi-agent-sidecar.mjs");
         let mut command = Command::new("node");
         command.arg(script);
+        configure_background_process(&mut command);
         return Ok(command);
     }
     Err("Pi Agent sidecar 未打包，请重新安装 Ploteo".into())
 }
+
+#[cfg(target_os = "windows")]
+fn configure_background_process(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_background_process(_command: &mut Command) {}
 
 async fn run_pi_agent(app: &AppHandle, request: &AgentRequest) -> Result<String, String> {
     let secret = get_secret(app, &request.profile.secret_ref)?;
@@ -343,7 +363,8 @@ async fn run_pi_agent(app: &AppHandle, request: &AgentRequest) -> Result<String,
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动 Pi Agent sidecar：{error}"))?;
@@ -353,9 +374,9 @@ async fn run_pi_agent(app: &AppHandle, request: &AgentRequest) -> Result<String,
         .await
         .map_err(|error| error.to_string())?;
     drop(stdin);
-    let output = child
-        .wait_with_output()
+    let output = timeout(PI_AGENT_TIMEOUT, child.wait_with_output())
         .await
+        .map_err(|_| "Pi Agent 请求超过 180 秒，已终止本次运行".to_string())?
         .map_err(|error| error.to_string())?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let response_line = stdout
@@ -1247,20 +1268,88 @@ fn select_project_directory() -> Option<String> {
         .map(|path| path.display().to_string())
 }
 
-fn validate_deletion_target(path: &Path) -> Result<(), String> {
+fn canonical_home() -> Option<PathBuf> {
+    dirs::home_dir().and_then(|home| home.canonicalize().ok())
+}
+
+fn validate_project_root(path: &Path) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
-        return Err("项目没有可删除的本地目录".into());
+        return Err("项目目录不能为空".into());
     }
-    let expanded = path.to_path_buf();
-    if expanded.parent().is_none() {
-        return Err("拒绝删除磁盘根目录".into());
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("无法解析项目目录：{error}"))?;
+    if canonical.parent().is_none() {
+        return Err("拒绝使用磁盘根目录作为项目目录".into());
     }
-    if let Some(home) = dirs::home_dir() {
-        if expanded == home {
-            return Err("拒绝删除用户主目录".into());
+    if canonical_home().is_some_and(|home| canonical == home) {
+        return Err("拒绝使用用户主目录作为项目目录".into());
+    }
+    Ok(canonical)
+}
+
+fn marker_path(project_root: &Path) -> PathBuf {
+    project_root.join(PROJECT_MARKER)
+}
+
+fn read_project_marker(project_root: &Path) -> Result<String, String> {
+    let marker = fs::read_to_string(marker_path(project_root))
+        .map_err(|_| "项目目录缺少 Ploteo 所有权标记，只允许删除项目记录".to_string())?;
+    let marker: Value =
+        serde_json::from_str(&marker).map_err(|_| "项目目录所有权标记无效".to_string())?;
+    marker
+        .get("projectId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "项目目录所有权标记缺少项目 ID".to_string())
+}
+
+fn validate_deletion_target(path: &Path, project_id: &str) -> Result<PathBuf, String> {
+    let canonical = validate_project_root(path)?;
+    if read_project_marker(&canonical)? != project_id {
+        return Err("项目目录所有权标记与当前项目不匹配，只允许删除项目记录".into());
+    }
+    Ok(canonical)
+}
+
+#[tauri::command]
+fn initialize_project_directory(project_id: String, directory: String) -> Result<String, String> {
+    if project_id.trim().is_empty() {
+        return Err("项目 ID 不能为空".into());
+    }
+    let requested = expand_home(directory.trim());
+    if !requested.is_absolute() {
+        return Err("项目目录必须是绝对路径，请使用“选择目录”按钮".into());
+    }
+    fs::create_dir_all(&requested).map_err(|error| format!("无法创建项目目录：{error}"))?;
+    let root = validate_project_root(&requested)?;
+    let marker = marker_path(&root);
+    if marker.exists() {
+        if read_project_marker(&root)? != project_id {
+            return Err("该目录已属于另一个 Ploteo 项目".into());
         }
+        return Ok(requested.display().to_string());
     }
-    Ok(())
+    let mut entries = fs::read_dir(&root).map_err(|error| error.to_string())?;
+    if entries
+        .next()
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err("请选择空目录作为项目目录，避免删除项目时误删已有文件".into());
+    }
+    let marker_payload = json!({
+        "format": 1,
+        "projectId": project_id,
+        "createdBy": "Ploteo"
+    });
+    fs::write(
+        marker,
+        serde_json::to_vec_pretty(&marker_payload).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("无法写入项目目录标记：{error}"))?;
+    Ok(requested.display().to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -1289,8 +1378,7 @@ fn delete_project(
     };
     let deletion_target = if delete_files {
         let target = expand_home(&directory);
-        validate_deletion_target(&target)?;
-        Some(target)
+        Some(validate_deletion_target(&target, &project_id)?)
     } else {
         None
     };
@@ -1381,6 +1469,7 @@ pub fn run() {
             download_result,
             open_project_directory,
             select_project_directory,
+            initialize_project_directory,
             delete_project,
             export_diagnostics,
         ])
@@ -1438,10 +1527,27 @@ mod tests {
 
     #[test]
     fn deletion_target_rejects_root_and_home() {
-        assert!(validate_deletion_target(Path::new("/")).is_err());
+        assert!(validate_project_root(Path::new("/")).is_err());
         if let Some(home) = dirs::home_dir() {
-            assert!(validate_deletion_target(&home).is_err());
+            assert!(validate_project_root(&home).is_err());
         }
-        assert!(validate_deletion_target(Path::new("/tmp/ploteo-project")).is_ok());
+    }
+
+    #[test]
+    fn deletion_target_requires_matching_marker() {
+        let root = std::env::temp_dir().join(format!("ploteo-delete-test-{}", chrono_timestamp()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(validate_deletion_target(&root, "project-a").is_err());
+        fs::write(
+            marker_path(&root),
+            json!({ "projectId": "project-a" }).to_string(),
+        )
+        .unwrap();
+        assert!(validate_deletion_target(&root, "project-b").is_err());
+        assert_eq!(
+            validate_deletion_target(&root, "project-a").unwrap(),
+            root.canonicalize().unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

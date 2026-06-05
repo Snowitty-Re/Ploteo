@@ -47,6 +47,7 @@ import {
   generateImage,
   generateText,
   hasSecret,
+  initializeProjectDirectory,
   inTauri,
   loadSnapshot,
   loadImageReference,
@@ -113,21 +114,27 @@ function ProjectManager({
   state: AppState;
   canClose: boolean;
   onClose: () => void;
-  onCreate: (name: string, directory: string) => void;
+  onCreate: (name: string, directory: string) => Promise<void>;
   onDelete: (projectId: string, deleteFiles: boolean) => Promise<void>;
   onDemo: () => void;
   onOpen: (projectId: string) => void;
 }) {
   const [name, setName] = useState("");
   const [directory, setDirectory] = useState("");
+  const [createError, setCreateError] = useState("");
   const workspaces = listWorkspaces(state).filter((workspace) => !isDemoWorkspace(workspace));
   const pickDirectory = async () => {
     const selected = await selectProjectDirectory();
     if (selected) setDirectory(selected);
   };
-  const create = () => {
+  const create = async () => {
     if (!name.trim() || !directory.trim()) return;
-    onCreate(name, directory);
+    setCreateError("");
+    try {
+      await onCreate(name, directory);
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error));
+    }
   };
   return (
     <main className="onboarding">
@@ -186,8 +193,9 @@ function ProjectManager({
                 <Button variant="ghost" onClick={() => void pickDirectory()}>选择目录</Button>
               </div>
             </label>
-            <Button disabled={!name.trim() || !directory.trim()} onClick={create}>创建并进入项目</Button>
-            <small>视频结果将下载到该目录下的 `episodes` 文件夹。</small>
+            <Button disabled={!name.trim() || !directory.trim()} onClick={() => void create()}>创建并进入项目</Button>
+            <small>请选择空目录。视频结果将下载到该目录下的 `episodes` 文件夹。</small>
+            {createError && <div className="form-message">{createError}</div>}
           </div>
         </section>
         <div className="manager-foot">
@@ -780,7 +788,15 @@ export function App() {
       disposed = true;
     };
   }, []);
-  useEffect(() => { if (ready) void saveSnapshot(state); }, [state, ready]);
+  useEffect(() => {
+    if (!ready) return;
+    const timer = window.setTimeout(() => {
+      void saveSnapshot(state).catch((error) => {
+        console.error("Failed to persist Ploteo state", error);
+      });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [state, ready]);
   useEffect(() => {
     if (!ready || !inTauri()) return;
     const profile = state.profiles.find((item) => item.capability === "video" && item.hasSecret);
@@ -849,8 +865,16 @@ export function App() {
           setShowProjectManager(false);
           setTab("overview");
         }}
-        onCreate={(name, directory) => {
-          setState(createWorkspace(state, name, directory));
+        onCreate={async (name, directory) => {
+          const next = createWorkspace(state, name, directory);
+          const projectDirectory = await initializeProjectDirectory(
+            next.project.id,
+            next.project.directory,
+          );
+          setState({
+            ...next,
+            project: { ...next.project, directory: projectDirectory },
+          });
           setShowProjectManager(false);
           setTab("overview");
         }}

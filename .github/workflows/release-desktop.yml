@@ -36,19 +36,16 @@ jobs:
           - label: Windows x64
             platform: windows-latest
             args: ""
-            rust-targets: ""
-            sidecar-target: bun-windows-x64
+            sidecar-target: bun-windows-x64-baseline
             sidecar-output: src-tauri/binaries/ploteo-pi-agent.exe
           - label: macOS Intel
-            platform: macos-latest
-            args: --target x86_64-apple-darwin
-            rust-targets: x86_64-apple-darwin,aarch64-apple-darwin
+            platform: macos-15-intel
+            args: ""
             sidecar-target: bun-darwin-x64
             sidecar-output: src-tauri/binaries/ploteo-pi-agent
           - label: macOS Apple Silicon
-            platform: macos-latest
-            args: --target aarch64-apple-darwin
-            rust-targets: x86_64-apple-darwin,aarch64-apple-darwin
+            platform: macos-15
+            args: ""
             sidecar-target: bun-darwin-arm64
             sidecar-output: src-tauri/binaries/ploteo-pi-agent
 
@@ -72,8 +69,6 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-targets }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -84,7 +79,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build Pi Agent sidecar
-        run: bun build --compile --target=${{ matrix.sidecar-target }} scripts/pi-agent-sidecar.mjs --outfile ${{ matrix.sidecar-output }}
+        run: node scripts/build-pi-sidecar.mjs --target=${{ matrix.sidecar-target }} --outfile=${{ matrix.sidecar-output }}
+
+      - name: Test compiled Pi Agent sidecar
+        run: node scripts/test-compiled-sidecar.mjs ${{ matrix.sidecar-output }}
 
       - name: Build and upload desktop bundle
         uses: tauri-apps/tauri-action@v0
@@ -96,7 +94,8 @@ jobs:
           releaseBody: |
             Ploteo desktop beta build.
 
-            Assets include Windows 10+ installers and macOS bundles.
+            Assets include Windows 10/11 x64 installers and macOS Intel / Apple Silicon bundles.
+            Windows ARM64 is not built or supported.
             These builds are currently unsigned and not notarized.
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}

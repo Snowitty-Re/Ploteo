@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { initialState, type AppState, type ModelProfile, type VideoParams } from "./domain";
 
 const KEY = "ploteo.beta.snapshot";
+let snapshotQueue: Promise<void> = Promise.resolve();
 
 export const inTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -69,7 +70,10 @@ export async function loadSnapshot(): Promise<AppState | null> {
 export async function saveSnapshot(state: AppState): Promise<void> {
   const snapshot = JSON.stringify(syncCurrentWorkspace(state));
   if (inTauri()) {
-    await invoke("save_snapshot", { snapshot });
+    snapshotQueue = snapshotQueue
+      .catch(() => undefined)
+      .then(() => invoke<void>("save_snapshot", { snapshot }));
+    await snapshotQueue;
     return;
   }
   localStorage.setItem(KEY, snapshot);
@@ -120,6 +124,16 @@ export async function openProjectDirectory(directory: string): Promise<void> {
 export async function selectProjectDirectory(): Promise<string | null> {
   if (inTauri()) return invoke<string | null>("select_project_directory");
   return window.prompt("请输入本地项目目录")?.trim() || null;
+}
+
+export async function initializeProjectDirectory(
+  projectId: string,
+  directory: string,
+): Promise<string> {
+  if (inTauri()) {
+    return invoke<string>("initialize_project_directory", { projectId, directory });
+  }
+  return directory;
 }
 
 export interface DeleteProjectResult {

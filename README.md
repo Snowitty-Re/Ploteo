@@ -5,6 +5,8 @@ Ploteo 是一个 local-first 桌面短剧生成编排器。它使用确定性工
 ## Beta 范围
 
 - Tauri 2 + React + TypeScript 桌面应用
+- 支持 Windows 10/11 x64、macOS 11+ Intel 与 Apple Silicon
+- 不生成、不发布且不支持 Windows ARM64
 - SQLite 保存项目、剧本、短集、素材、模型配置、API Key、任务和 Agent 运行记录
 - 项目删除支持仅删除数据库记录，或同时删除用户确认的项目目录
 - Pi Agent sidecar 负责编剧、策划和审校等文本推理，不开放文件或命令工具
@@ -25,13 +27,15 @@ pnpm build
 pnpm tauri dev
 ```
 
+本地执行 `pnpm tauri build` 还需要安装 Bun，用于生成随应用打包的 Pi Agent sidecar。
+
 浏览器预览模式使用 `localStorage` 保存界面状态，密钥只保存在当前浏览器会话。Tauri 桌面模式统一使用本地 SQLite。Beta 不使用系统钥匙串，API Key 以明文存入应用数据库，因此应限制本机账户和数据库文件访问权限。
 
 ## GitHub Actions 发布
 
 仓库包含两个 workflow：
 
-- `Desktop CI`：在 `main`、PR 和手动触发时运行前端测试、前端构建，以及 macOS / Windows Rust 测试。
+- `Desktop CI`：在 `main`、PR 和手动触发时构建并运行目标平台 sidecar、执行前端与 Rust 测试，并实际生成 Windows x64、macOS Intel 和 macOS Apple Silicon 安装包。
 - `Release Desktop Apps`：先为目标平台编译 Pi Agent sidecar，再构建 Windows 10+ 与 macOS 包并上传到 GitHub Release。
 
 手动发布时，在 GitHub 的 Actions 页面运行 `Release Desktop Apps`。默认会创建 draft prerelease，确认产物后再发布。推送 tag 时会直接按 tag 创建 Release：
@@ -41,7 +45,7 @@ git tag ploteo-v0.1.0
 git push origin ploteo-v0.1.0
 ```
 
-当前 Beta 构建未做 Windows 代码签名，也未做 macOS 公证。
+Windows 只发布 x64 包，不包含 Windows ARM64。当前 Beta 构建未做 Windows 代码签名，也未做 macOS 公证。
 
 ## 工作流
 

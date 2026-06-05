@@ -44,18 +44,42 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-  rust:
-    name: Rust / ${{ matrix.platform }}
+  desktop:
+    name: Desktop / ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - macos-latest
-          - windows-latest
+        include:
+          - label: Windows x64
+            platform: windows-latest
+            sidecar-target: bun-windows-x64-baseline
+            sidecar-output: src-tauri/binaries/ploteo-pi-agent.exe
+          - label: macOS Intel
+            platform: macos-15-intel
+            sidecar-target: bun-darwin-x64
+            sidecar-output: src-tauri/binaries/ploteo-pi-agent
+          - label: macOS Apple Silicon
+            platform: macos-15
+            sidecar-target: bun-darwin-arm64
+            sidecar-output: src-tauri/binaries/ploteo-pi-agent
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -65,5 +89,17 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Pi Agent sidecar
+        run: node scripts/build-pi-sidecar.mjs --target=${{ matrix.sidecar-target }} --outfile=${{ matrix.sidecar-output }}
+
+      - name: Test compiled Pi Agent sidecar
+        run: node scripts/test-compiled-sidecar.mjs ${{ matrix.sidecar-output }}
+
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build desktop installers
+        run: pnpm tauri build
