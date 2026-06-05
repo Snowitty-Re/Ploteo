@@ -35,6 +35,8 @@ export interface Asset {
   kind: "character" | "scene" | "style";
   prompt: string;
   preview: string;
+  localPath?: string;
+  remoteUrl?: string;
   source: "generated" | "uploaded";
   confirmed: boolean;
   containsRealFace: boolean;
@@ -56,6 +58,7 @@ export interface Episode {
   id: string;
   number: number;
   title: string;
+  sourceBeatIds: string[];
   sourceText: string;
   summary: string;
   scene: string;
@@ -63,12 +66,22 @@ export interface Episode {
   dialogue: string;
   rhythm: string;
   continuity: string;
+  shotList: string[];
   duration: number;
   prompt: string;
   status: TaskStatus;
   batchId?: string;
   versions: EpisodeVersion[];
   activeVersionId?: string;
+}
+
+export interface ScriptBeat {
+  id: string;
+  scene: string;
+  characters: string[];
+  action: string;
+  dialogue: string;
+  hook: string;
 }
 
 export interface VideoParams {
@@ -93,6 +106,7 @@ export interface Project {
   directory: string;
   idea: string;
   script: string;
+  scriptBeats: ScriptBeat[];
   style: string;
   targetEpisodes: number;
   contentLength: string;
@@ -178,6 +192,7 @@ export const emptyProject = (directory = ""): Project => ({
   directory,
   idea: "",
   script: "",
+  scriptBeats: [],
   style: "都市电影感，克制自然光，真实表演",
   targetEpisodes: 8,
   contentLength: "中等篇幅，每集 4~15 秒，整体适合内部测试短剧生成",

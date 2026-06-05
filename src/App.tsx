@@ -18,6 +18,7 @@ import {
   acceptEpisode,
   addActivity,
   buildPlannerPrompt,
+  buildReviewerPrompt,
   buildWriterPrompt,
   coverage,
   createWorkspace,
@@ -29,6 +30,7 @@ import {
   markRemoteTask,
   openWorkspace,
   parseEpisodePlan,
+  parseWriterDraft,
   prepareNextBatch,
   queueActiveBatch,
   queueEpisodeRegeneration,
@@ -39,6 +41,7 @@ import {
 import {
   cancelSeedanceTask,
   createSeedanceTask,
+  deleteProject,
   downloadResult,
   exportDiagnostics,
   generateImage,
@@ -46,6 +49,7 @@ import {
   hasSecret,
   inTauri,
   loadSnapshot,
+  loadImageReference,
   openProjectDirectory,
   querySeedanceTask,
   refreshProfileSecrets,
@@ -110,7 +114,7 @@ function ProjectManager({
   canClose: boolean;
   onClose: () => void;
   onCreate: (name: string, directory: string) => void;
-  onDelete: (projectId: string) => void;
+  onDelete: (projectId: string, deleteFiles: boolean) => Promise<void>;
   onDemo: () => void;
   onOpen: (projectId: string) => void;
 }) {
@@ -133,7 +137,7 @@ function ProjectManager({
             <div className="brand-mark">P</div>
             <p className="eyebrow">PLOTEO · PROJECT MANAGER</p>
             <h1>选择一个本地项目。</h1>
-            <p className="lede">项目内容保存在本地快照中，生成的视频落入你选择的目录。</p>
+            <p className="lede">项目、模型配置和运行记录保存在本地 SQLite，生成文件落入你选择的目录。</p>
           </div>
           {canClose && <Button variant="quiet" onClick={onClose}>返回当前项目</Button>}
         </div>
@@ -152,9 +156,18 @@ function ProjectManager({
                 <Button
                   variant="danger"
                   onClick={() => {
-                    if (window.confirm(`删除项目“${workspace.project.name}”？这只会移除 Ploteo 的本地项目记录，不会删除你选择的磁盘目录。`)) {
-                      onDelete(workspace.project.id);
-                    }
+                    const choice = window.prompt(
+                      `删除项目“${workspace.project.name}”\n\n输入 1：只删除项目记录，保留本地文件\n输入 2：同时删除整个项目目录\n留空：取消`,
+                      "1",
+                    );
+                    if (choice !== "1" && choice !== "2") return;
+                    const deleteFiles = choice === "2";
+                    const confirmed = window.confirm(
+                      deleteFiles
+                        ? `确认永久删除项目记录及目录？\n${workspace.project.directory}\n此操作不可撤销。`
+                        : "确认删除项目记录？本地目录和文件会保留。",
+                    );
+                    if (confirmed) void onDelete(workspace.project.id, deleteFiles);
                   }}
                 >
                   删除
@@ -179,7 +192,7 @@ function ProjectManager({
         </section>
         <div className="manager-foot">
           <span>LOCAL-FIRST</span>
-          <span>密钥仅写入系统密钥链</span>
+          <span>配置与密钥存入本地 SQLite</span>
           <span>每批最多并行 5 集</span>
         </div>
       </section>
@@ -284,7 +297,12 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
     const script = await file.text();
     setState(
       addActivity(
-        { ...state, project: { ...state.project, script, updatedAt: now() }, episodes: [], batches: [] },
+        {
+          ...state,
+          project: { ...state.project, script, scriptBeats: [], updatedAt: now() },
+          episodes: [],
+          batches: [],
+        },
         `已导入剧本文件 ${file.name}`,
         "success",
       ),
@@ -298,14 +316,27 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
     }
     setGenerating(true);
     try {
-      const script = await generateText(
+      const raw = await generateText(
         textProfile!,
         buildWriterPrompt(state.project),
+        state.project.id,
+        "writer",
       );
+      const draft = parseWriterDraft(raw);
       setState((current) =>
         addActivity(
-          { ...current, project: { ...current.project, script, updatedAt: now() }, episodes: [], batches: [] },
-          "编剧 Agent 已生成完整剧本，请确认后自然拆集",
+          {
+            ...current,
+            project: {
+              ...current.project,
+              script: draft.script,
+              scriptBeats: draft.beats,
+              updatedAt: now(),
+            },
+            episodes: [],
+            batches: [],
+          },
+          `编剧 Agent 已生成 ${draft.beats.length} 个可追踪剧情节点，请确认后自然拆集`,
           "success",
         ),
       );
@@ -323,12 +354,26 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
     }
     setPlanning(true);
     try {
-      const raw = await generateText(textProfile!, buildPlannerPrompt(state.project));
-      const episodes = parseEpisodePlan(raw);
+      const plannerRaw = await generateText(
+        textProfile!,
+        buildPlannerPrompt(state.project),
+        state.project.id,
+        "planner",
+      );
+      const reviewedRaw = await generateText(
+        textProfile!,
+        buildReviewerPrompt(state.project, plannerRaw),
+        state.project.id,
+        "reviewer",
+      );
+      const episodes = parseEpisodePlan(
+        reviewedRaw,
+        state.project.scriptBeats?.map((beat) => beat.id) ?? [],
+      );
       setState((current) =>
         addActivity(
           { ...current, episodes, batches: [] },
-          `短剧策划 Agent 已拆分为 ${episodes.length} 集，并生成分镜、连续性和视频 Prompt`,
+          `短剧策划与审校 Agent 已拆分为 ${episodes.length} 集，并完成剧情节点覆盖检查`,
           "success",
         ),
       );
@@ -354,11 +399,11 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
             <label>内容长短<input value={state.project.contentLength ?? ""} onChange={(event) => setState({ ...state, project: { ...state.project, contentLength: event.target.value, updatedAt: now() } })} placeholder="例如：12 集，每集强钩子，整体中等篇幅" /></label>
           </div>
           <label>统一风格<input value={state.project.style} onChange={(event) => setState({ ...state, project: { ...state.project, style: event.target.value, updatedAt: now() } })} placeholder="例如：二次元紫色幻想、赛博悬疑、都市电影感" /></label>
-          <textarea value={state.project.script} onChange={(event) => setState({ ...state, project: { ...state.project, script: event.target.value, updatedAt: now() } })} placeholder="输入创意生成的剧本，或在此粘贴完整剧本..." />
+          <textarea value={state.project.script} onChange={(event) => setState({ ...state, project: { ...state.project, script: event.target.value, scriptBeats: [], updatedAt: now() } })} placeholder="输入创意生成的剧本，或在此粘贴完整剧本..." />
           <div className="coverage">
             <div><span>覆盖检查</span><strong>{result.complete ? "完整覆盖" : "需要重新拆集"}</strong></div>
             <Progress value={result.sourceChars ? result.coveredChars / result.sourceChars * 100 : 0} />
-            <small>{result.coveredChars} / {result.sourceChars} 个非空白字符</small>
+            <small>{result.coveredChars} / {result.sourceChars} {state.project.scriptBeats?.length ? "个剧情节点" : "个非空白字符"}</small>
           </div>
         </article>
         <section className="episode-stack">
@@ -368,6 +413,7 @@ function ScriptWorkspace({ state, setState }: { state: AppState; setState: SetAp
               <textarea value={episode.summary} onChange={(event) => updateEpisode(episode.id, { summary: event.target.value })} />
               <p className="episode-meta"><strong>对白</strong>{episode.dialogue}</p>
               <p className="episode-meta"><strong>连续性</strong>{episode.continuity}</p>
+              {episode.shotList?.length ? <p className="episode-meta"><strong>分镜</strong>{episode.shotList.join("；")}</p> : null}
               <div className="compact-grid"><label>时长<input type="number" min="4" max="15" value={episode.duration} onChange={(event) => updateEpisode(episode.id, { duration: Number(event.target.value) })} /></label><label>场景<input value={episode.scene} onChange={(event) => updateEpisode(episode.id, { scene: event.target.value })} /></label></div>
               <label>视频 Prompt<textarea value={episode.prompt} onChange={(event) => updateEpisode(episode.id, { prompt: event.target.value })} /></label>
             </article>
@@ -418,11 +464,13 @@ function AssetsWorkspace({ state, setState }: { state: AppState; setState: SetAp
     }
     setGenerating(asset.id);
     try {
-      const preview = await generateImage(imageProfile, asset.prompt);
+      const generated = await generateImage(imageProfile, asset.prompt, state.project.id);
       setState((current) => ({
         ...current,
         assets: current.assets.map((item) =>
-          item.id === asset.id ? { ...item, preview, source: "generated", confirmed: false } : item,
+          item.id === asset.id
+            ? { ...item, ...generated, source: "generated", confirmed: false }
+            : item,
         ),
       }));
     } catch (error) {
@@ -500,15 +548,27 @@ function BatchWorkspace({ state, setState }: { state: AppState; setState: SetApp
     const queued = queueActiveBatch(state);
     setState(queued);
     setSubmitting(true);
-    const imageRefs = state.assets
-      .filter((asset) => asset.confirmed && /^https?:/.test(asset.preview))
-      .map((asset) => asset.preview);
+    const imageRefs = await Promise.all(
+      state.assets
+        .filter((asset) => asset.confirmed)
+        .map(async (asset) => {
+          if (asset.localPath) return loadImageReference(asset.localPath);
+          if (asset.remoteUrl) return asset.remoteUrl;
+          return /^https?:|^data:image\//.test(asset.preview) ? asset.preview : "";
+        }),
+    ).then((refs) => refs.filter(Boolean));
     await Promise.all(
       episodes.map(async (episode) => {
         const queuedEpisode = queued.episodes.find((item) => item.id === episode.id)!;
         const version = queuedEpisode.versions.find((item) => item.id === queuedEpisode.activeVersionId)!;
         try {
-          const taskId = await createSeedanceTask(videoProfile, version.prompt, version.params, imageRefs);
+          const taskId = await createSeedanceTask(
+            videoProfile,
+            version.prompt,
+            version.params,
+            imageRefs,
+            state.project.id,
+          );
           setState((current) => markRemoteTask(current, episode.id, version.id, { taskId, status: "generating" }));
         } catch (error) {
           setState((current) =>
@@ -593,7 +653,13 @@ function ResultsWorkspace({ state, setState }: { state: AppState; setState: SetA
     const version = queuedEpisode.versions.find((item) => item.id === queuedEpisode.activeVersionId)!;
     setState(queued);
     try {
-      const taskId = await createSeedanceTask(videoProfile, version.prompt, version.params, []);
+      const taskId = await createSeedanceTask(
+        videoProfile,
+        version.prompt,
+        version.params,
+        [],
+        state.project.id,
+      );
       setState((current) => markRemoteTask(current, episode.id, version.id, { taskId, status: "generating" }));
     } catch (error) {
       setState((current) =>
@@ -643,7 +709,7 @@ function SettingsWorkspace({ state, setState }: { state: AppState; setState: Set
       }
       update({ hasSecret: true });
       setSecret("");
-      setMessage(`密钥已写入并验证系统密钥链：${profile.secretRef}`);
+      setMessage(`密钥已写入并验证本地 SQLite：${profile.secretRef}`);
     } catch (error) {
       update({ hasSecret: false });
       setMessage(`密钥写入失败：${error instanceof Error ? error.message : String(error)}`);
@@ -654,7 +720,7 @@ function SettingsWorkspace({ state, setState }: { state: AppState; setState: Set
       const storedSecret = await hasSecret(profile.secretRef);
       update({ hasSecret: storedSecret });
       if (!storedSecret) {
-        setMessage(`密钥引用 ${profile.secretRef} 尚未写入系统密钥链。请先输入密钥并保存。`);
+        setMessage(`密钥引用 ${profile.secretRef} 尚未写入本地 SQLite。请先输入密钥并保存。`);
         return;
       }
       setMessage(await validateProfile({ ...profile, hasSecret: storedSecret }));
@@ -665,7 +731,7 @@ function SettingsWorkspace({ state, setState }: { state: AppState; setState: Set
   };
   return (
     <>
-      <header className="page-header"><div><p className="eyebrow">MODEL PROFILES</p><h1>适配器与密钥</h1><p>密钥只写入系统密钥链。项目文件、SQLite 和日志仅保存密钥引用。</p></div><Button variant="ghost" onClick={async () => setMessage(await exportDiagnostics())}>导出诊断日志</Button></header>
+      <header className="page-header"><div><p className="eyebrow">MODEL PROFILES</p><h1>适配器与密钥</h1><p>模型配置、API Key 和运行记录统一保存在 Ploteo 本地 SQLite，诊断日志会自动脱敏。</p></div><Button variant="ghost" onClick={async () => setMessage(await exportDiagnostics())}>导出诊断日志</Button></header>
       <section className="settings-layout">
         <aside className="panel profile-list">{state.profiles.map((item) => <button className={item.id === profile.id ? "active" : ""} onClick={() => setActive(item.id)} key={item.id}><span>{item.capability.toUpperCase()}</span><strong>{item.name}</strong><small>{item.adapter}</small></button>)}</aside>
         <article className="panel settings-form">
@@ -675,7 +741,7 @@ function SettingsWorkspace({ state, setState }: { state: AppState; setState: Set
           <label>Base URL<input value={profile.baseUrl} onChange={(event) => update({ baseUrl: event.target.value })} /></label>
           <label>模型名<input value={profile.model} onChange={(event) => update({ model: event.target.value })} /></label>
           <label>密钥<input type="password" placeholder="写入后不会显示" value={secret} onChange={(event) => setSecret(event.target.value)} /></label>
-          <div className="button-row"><Button onClick={persistSecret}>保存到密钥链</Button><Button variant="ghost" onClick={validate}>校验示例请求</Button></div>
+          <div className="button-row"><Button onClick={persistSecret}>保存到本地数据库</Button><Button variant="ghost" onClick={validate}>校验示例请求</Button></div>
           {message && <div className="form-message">{message}</div>}
           {profile.capability === "video" && <div className="advanced"><strong>Seedance 默认参数</strong><div className="param-row"><span>duration = -1 自适应</span><span>generate_audio = true</span><span>POST /api/v3/contents/generations/tasks</span></div></div>}
         </article>
@@ -700,7 +766,7 @@ export function App() {
         } catch (error) {
           restored = addActivity(
             restored,
-            `系统密钥链状态同步失败：${error instanceof Error ? error.message : String(error)}`,
+            `本地密钥状态同步失败：${error instanceof Error ? error.message : String(error)}`,
             "warning",
           );
         }
@@ -788,10 +854,26 @@ export function App() {
           setShowProjectManager(false);
           setTab("overview");
         }}
-        onDelete={(projectId) => {
-          setState(deleteWorkspace(state, projectId));
-          setShowProjectManager(true);
-          setTab("overview");
+        onDelete={async (projectId, deleteFiles) => {
+          try {
+            const result = await deleteProject(projectId, deleteFiles);
+            setState((current) => {
+              const next = deleteWorkspace(current, projectId);
+              return result.fileWarning
+                ? addActivity(next, result.fileWarning, "warning")
+                : next;
+            });
+            setShowProjectManager(true);
+            setTab("overview");
+          } catch (error) {
+            setState((current) =>
+              addActivity(
+                current,
+                `项目删除失败：${error instanceof Error ? error.message : String(error)}`,
+                "warning",
+              ),
+            );
+          }
         }}
         onOpen={(projectId) => {
           setState(openWorkspace(state, projectId));

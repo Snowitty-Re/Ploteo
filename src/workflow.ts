@@ -6,6 +6,7 @@ import {
   type EpisodeVersion,
   type Project,
   type ProjectWorkspace,
+  type ScriptBeat,
   emptyProject,
   now,
   uid,
@@ -60,6 +61,7 @@ export function splitScript(script: string): Episode[] {
       id: uid("episode"),
       number: index + 1,
       title: `第 ${index + 1} 集`,
+      sourceBeatIds: [],
       sourceText,
       summary: sourceText,
       scene,
@@ -67,6 +69,7 @@ export function splitScript(script: string): Episode[] {
       dialogue,
       rhythm: index % 2 === 0 ? "悬念建立，结尾留钩子" : "快速推进，动作收束",
       continuity,
+      shotList: [],
       duration: clampDuration(sourceText),
       prompt: buildPrompt(sourceText, scene, dialogue, continuity),
       status: "draft",
@@ -105,16 +108,67 @@ export function buildWriterPrompt(project: Project): string {
     `- 内容长短：${project.contentLength || "中等篇幅"}`,
     `- 统一风格：${project.style || "真实电影感"}`,
     "- 输出必须包含完整剧情，不要只给大纲。",
-    "- 每个剧情节点要包含场景、人物动作、关键对白和钩子，方便后续拆成短集。",
-    "- 不要解释生成过程。",
+    "- 每个剧情节点必须有稳定且唯一的 beatId，格式 beat-001、beat-002……",
+    "- 每个节点包含场景、人物、动作、关键对白和结尾钩子。",
+    "- 只输出 JSON，不要 Markdown，不要解释。",
     "",
-    "建议输出结构：",
-    "1. 剧名",
-    "2. 世界观与主要角色",
-    "3. 完整剧本正文，按自然剧情节点分段，每段可对应 1 个 4~15 秒短集",
+    "JSON Schema：",
+    "{",
+    '  "title": "剧名",',
+    '  "premise": "世界观与故事前提",',
+    '  "characters": [{"name":"角色名","description":"人物设定"}],',
+    '  "beats": [',
+    '    {"beatId":"beat-001","scene":"场景","characters":["角色"],"action":"可视化动作","dialogue":"关键对白","hook":"结尾钩子"}',
+    "  ]",
+    "}",
     "",
     `用户创意：${project.idea}`,
   ].join("\n");
+}
+
+export function parseWriterDraft(raw: string): {
+  title: string;
+  premise: string;
+  beats: ScriptBeat[];
+  script: string;
+} {
+  const parsed = extractJson(raw) as Record<string, unknown>;
+  const rawBeats = Array.isArray(parsed.beats) ? parsed.beats : [];
+  if (!rawBeats.length) throw new Error("编剧 Agent 返回的 beats 为空");
+  const seen = new Set<string>();
+  const beats = rawBeats.map((item, index) => {
+    const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const id = asString(record.beatId, `beat-${String(index + 1).padStart(3, "0")}`);
+    if (seen.has(id)) throw new Error(`编剧 Agent 返回了重复剧情节点 ${id}`);
+    seen.add(id);
+    return {
+      id,
+      scene: asString(record.scene, "未指定场景"),
+      characters: Array.isArray(record.characters)
+        ? record.characters.map((character) => asString(character)).filter(Boolean)
+        : [],
+      action: asString(record.action),
+      dialogue: asString(record.dialogue, "无对白"),
+      hook: asString(record.hook),
+    };
+  });
+  if (beats.some((beat) => !beat.action)) {
+    throw new Error("编剧 Agent 返回的剧情节点缺少可拍摄动作");
+  }
+  const title = asString(parsed.title, "未命名短剧");
+  const premise = asString(parsed.premise);
+  const script = [
+    `剧名：${title}`,
+    premise ? `故事前提：${premise}` : "",
+    ...beats.map((beat) => [
+      `[${beat.id}] ${beat.scene}`,
+      `人物：${beat.characters.join("、") || "未指定"}`,
+      `动作：${beat.action}`,
+      `对白：${beat.dialogue}`,
+      `钩子：${beat.hook || "自然承接下一节点"}`,
+    ].join("\n")),
+  ].filter(Boolean).join("\n\n");
+  return { title, premise, beats, script };
 }
 
 export function buildPlannerPrompt(project: Project): string {
@@ -124,7 +178,8 @@ export function buildPlannerPrompt(project: Project): string {
     "硬性要求：",
     `- 目标短集数：尽量为 ${project.targetEpisodes || 8} 集；如果剧情自然需要，可以略微增减，但必须完整覆盖原始剧本。`,
     "- 每集 duration 必须是 4 到 15 秒之间的整数。",
-    "- 每集必须包含 sourceText、summary、scene、characters、dialogue、rhythm、continuity、shotList、prompt。",
+    "- 每集必须包含 sourceBeatIds、sourceText、summary、scene、characters、dialogue、rhythm、continuity、shotList、prompt。",
+    "- sourceBeatIds 只能引用下方剧情节点 ID；每个剧情节点必须至少被一集引用。",
     "- prompt 必须可直接给视频模型使用，包含镜头、角色、动作、对白、环境音、音效/配乐意图。",
     "- 不要本地剪辑思维，不要字幕文件，不要 TTS。声音由视频模型原生生成。",
     "- 只输出 JSON，不要 Markdown，不要解释。",
@@ -135,6 +190,7 @@ export function buildPlannerPrompt(project: Project): string {
     "    {",
     '      "number": 1,',
     '      "title": "第 1 集",',
+    '      "sourceBeatIds": ["beat-001"],',
     '      "sourceText": "覆盖的原剧本文字",',
     '      "summary": "本集剧情",',
     '      "scene": "场景",',
@@ -151,21 +207,39 @@ export function buildPlannerPrompt(project: Project): string {
     "",
     `统一风格：${project.style || "真实电影感"}`,
     `内容长短：${project.contentLength || "中等篇幅"}`,
+    `剧情节点：${JSON.stringify(project.scriptBeats ?? [])}`,
     "",
     "完整剧本：",
     project.script,
   ].join("\n");
 }
 
-export function parseEpisodePlan(raw: string): Episode[] {
+export function buildReviewerPrompt(project: Project, plannerOutput: string): string {
+  return [
+    "你是 Ploteo 审校 Agent。检查短剧策划结果并直接返回修正后的完整 JSON。",
+    "硬性检查：",
+    "- 每集 duration 为 4~15 秒整数。",
+    "- sourceBeatIds 只能引用原始剧情节点，并且所有剧情节点至少覆盖一次。",
+    "- 每集必须有场景、角色、对白、节奏、连续性、shotList 和可提交的视频 prompt。",
+    "- 保持 JSON Schema 不变，只输出 JSON，不要解释。",
+    `原始剧情节点：${JSON.stringify(project.scriptBeats ?? [])}`,
+    "待审校策划结果：",
+    plannerOutput,
+  ].join("\n");
+}
+
+export function parseEpisodePlan(raw: string, expectedBeatIds: string[] = []): Episode[] {
   const parsed = extractJson(raw) as { episodes?: unknown[] };
   const episodes = Array.isArray(parsed.episodes) ? parsed.episodes : [];
   if (!episodes.length) {
     throw new Error("短剧策划 Agent 返回的 episodes 为空");
   }
-  return episodes.map((item, index) => {
+  const planned = episodes.map((item, index) => {
     const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
     const sourceText = asString(record.sourceText) || asString(record.summary, `第 ${index + 1} 集剧情`);
+    const sourceBeatIds = Array.isArray(record.sourceBeatIds)
+      ? record.sourceBeatIds.map((beatId) => asString(beatId)).filter(Boolean)
+      : [];
     const summary = asString(record.summary, sourceText);
     const scene = asString(record.scene, "未指定场景");
     const characters = Array.isArray(record.characters)
@@ -191,6 +265,7 @@ export function parseEpisodePlan(raw: string): Episode[] {
       id: uid("episode"),
       number: Math.max(1, Math.round(asNumber(record.number, index + 1))),
       title: asString(record.title, `第 ${index + 1} 集`),
+      sourceBeatIds,
       sourceText,
       summary,
       scene,
@@ -198,6 +273,7 @@ export function parseEpisodePlan(raw: string): Episode[] {
       dialogue,
       rhythm,
       continuity,
+      shotList,
       duration,
       prompt,
       status: "draft",
@@ -206,6 +282,15 @@ export function parseEpisodePlan(raw: string): Episode[] {
     return episode;
   }).sort((left, right) => left.number - right.number)
     .map((episode, index) => ({ ...episode, number: index + 1 }));
+  if (expectedBeatIds.length) {
+    const expected = new Set(expectedBeatIds);
+    const referenced = new Set(planned.flatMap((episode) => episode.sourceBeatIds));
+    const unknown = [...referenced].filter((beatId) => !expected.has(beatId));
+    const missing = [...expected].filter((beatId) => !referenced.has(beatId));
+    if (unknown.length) throw new Error(`短剧策划 Agent 引用了未知剧情节点：${unknown.join("、")}`);
+    if (missing.length) throw new Error(`短剧策划 Agent 未覆盖剧情节点：${missing.join("、")}`);
+  }
+  return planned;
 }
 
 const preview = (hue: number) =>
@@ -377,6 +462,16 @@ export function addActivity(
 }
 
 export function coverage(state: AppState) {
+  const beatIds = state.project.scriptBeats?.map((beat) => beat.id) ?? [];
+  if (beatIds.length) {
+    const referenced = new Set(state.episodes.flatMap((episode) => episode.sourceBeatIds ?? []));
+    const covered = beatIds.filter((beatId) => referenced.has(beatId)).length;
+    return {
+      complete: covered === beatIds.length,
+      sourceChars: beatIds.length,
+      coveredChars: covered,
+    };
+  }
   const source = state.project.script.replace(/\s/g, "");
   const episodes = state.episodes.map((episode) => episode.sourceText).join("").replace(/\s/g, "");
   return {

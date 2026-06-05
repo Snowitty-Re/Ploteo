@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { initialState, type AppState, type ModelProfile, type VideoParams } from "./domain";
 
 const KEY = "ploteo.beta.snapshot";
@@ -33,10 +34,26 @@ function syncCurrentWorkspace(state: AppState): AppState {
 
 function hydrateSnapshot(snapshot: string): AppState {
   const stored = JSON.parse(snapshot) as Partial<AppState>;
+  const defaults = initialState();
+  const normalizeWorkspace = (workspace: AppState["workspaces"][number]) => ({
+    ...workspace,
+    project: { ...defaults.project, ...workspace.project },
+    episodes: workspace.episodes.map((episode) => ({
+      ...episode,
+      sourceBeatIds: episode.sourceBeatIds ?? [],
+      shotList: episode.shotList ?? [],
+    })),
+  });
   return syncCurrentWorkspace({
-    ...initialState(),
+    ...defaults,
     ...stored,
-    workspaces: stored.workspaces ?? [],
+    project: { ...defaults.project, ...stored.project },
+    episodes: (stored.episodes ?? []).map((episode) => ({
+      ...episode,
+      sourceBeatIds: episode.sourceBeatIds ?? [],
+      shotList: episode.shotList ?? [],
+    })),
+    workspaces: (stored.workspaces ?? []).map(normalizeWorkspace),
   });
 }
 
@@ -105,14 +122,29 @@ export async function selectProjectDirectory(): Promise<string | null> {
   return window.prompt("请输入本地项目目录")?.trim() || null;
 }
 
+export interface DeleteProjectResult {
+  fileWarning?: string;
+}
+
+export async function deleteProject(
+  projectId: string,
+  deleteFiles: boolean,
+): Promise<DeleteProjectResult> {
+  if (inTauri()) {
+    return invoke<DeleteProjectResult>("delete_project", { projectId, deleteFiles });
+  }
+  return {};
+}
+
 export async function createSeedanceTask(
   profile: ModelProfile,
   prompt: string,
   params: VideoParams,
   imageRefs: string[],
+  projectId?: string,
 ): Promise<string> {
   const response = await invoke<{ taskId: string }>("create_seedance_task", {
-    request: { profile, prompt, params, imageRefs },
+    request: { profile, prompt, params, imageRefs, projectId },
   });
   return response.taskId;
 }
@@ -129,7 +161,7 @@ export async function querySeedanceTask(
   if (["succeeded", "success", "completed"].includes(status)) {
     return { status: "review", resultUrl: resultUrl || undefined };
   }
-  if (["failed", "error"].includes(status)) return { status: "failed", error };
+  if (["failed", "error", "expired"].includes(status)) return { status: "failed", error };
   if (["canceled", "cancelled"].includes(status)) return { status: "canceled", error };
   return { status: status === "queued" ? "queued" : "generating" };
 }
@@ -142,10 +174,36 @@ export async function downloadResult(url: string, destination: string): Promise<
   return invoke<string>("download_result", { url, destination });
 }
 
-export async function generateText(profile: ModelProfile, prompt: string): Promise<string> {
-  return invoke<string>("generate_text", { request: { profile, prompt } });
+export async function generateText(
+  profile: ModelProfile,
+  prompt: string,
+  projectId?: string,
+  agentKind?: string,
+): Promise<string> {
+  return invoke<string>("generate_text", {
+    request: { profile, prompt, projectId, agentKind },
+  });
 }
 
-export async function generateImage(profile: ModelProfile, prompt: string): Promise<string> {
-  return invoke<string>("generate_image", { request: { profile, prompt } });
+export async function generateImage(
+  profile: ModelProfile,
+  prompt: string,
+  projectId?: string,
+): Promise<{ preview: string; localPath?: string; remoteUrl?: string }> {
+  const result = await invoke<{
+    previewUrl: string;
+    localPath?: string;
+    remoteUrl?: string;
+  }>("generate_image", {
+    request: { profile, prompt, projectId, agentKind: "visual" },
+  });
+  return {
+    preview: result.localPath ? convertFileSrc(result.localPath) : result.previewUrl,
+    localPath: result.localPath,
+    remoteUrl: result.remoteUrl,
+  };
+}
+
+export async function loadImageReference(path: string): Promise<string> {
+  return invoke<string>("load_image_reference", { path });
 }

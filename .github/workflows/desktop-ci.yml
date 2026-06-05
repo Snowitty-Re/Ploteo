@@ -38,6 +38,9 @@ jobs:
       - name: Run frontend tests
         run: pnpm test
 
+      - name: Check Pi Agent sidecar
+        run: pnpm test:pi-sidecar
+
       - name: Build frontend
         run: pnpm build
 

@@ -12,6 +12,7 @@ import {
   markRemoteTask,
   openWorkspace,
   parseEpisodePlan,
+  parseWriterDraft,
   prepareNextBatch,
   queueActiveBatch,
   queueEpisodeRegeneration,
@@ -155,6 +156,7 @@ describe("deterministic episode workflow", () => {
         {
           number: 1,
           title: "开场",
+          sourceBeatIds: ["beat-001"],
           sourceText: "少女走进剧院。",
           summary: "少女发现紫色星尘。",
           scene: "废弃剧院",
@@ -167,15 +169,50 @@ describe("deterministic episode workflow", () => {
           prompt: "竖屏镜头，少女推门，星尘漂浮，同步环境音。",
         },
       ],
-    }));
+    }), ["beat-001"]);
     expect(episodes).toHaveLength(1);
     expect(episodes[0]).toMatchObject({
       title: "开场",
       scene: "废弃剧院",
       duration: 9,
       characters: ["少女", "星尘"],
+      sourceBeatIds: ["beat-001"],
       status: "draft",
     });
     expect(episodes[0].prompt).toContain("同步环境音");
+  });
+
+  it("parses writer beats and rejects incomplete planner coverage", () => {
+    const draft = parseWriterDraft(JSON.stringify({
+      title: "紫尘剧院",
+      premise: "星尘会回应人的秘密",
+      beats: [
+        {
+          beatId: "beat-001",
+          scene: "废弃剧院",
+          characters: ["少女"],
+          action: "少女推开剧院大门",
+          dialogue: "有人吗？",
+          hook: "紫色星尘突然亮起",
+        },
+        {
+          beatId: "beat-002",
+          scene: "剧院舞台",
+          characters: ["少女", "星尘"],
+          action: "星尘聚成人形",
+          dialogue: "别开灯。",
+          hook: "后台传来脚步声",
+        },
+      ],
+    }));
+    expect(draft.beats.map((beat) => beat.id)).toEqual(["beat-001", "beat-002"]);
+    expect(draft.script).toContain("[beat-001]");
+    expect(() => parseEpisodePlan(JSON.stringify({
+      episodes: [{
+        sourceBeatIds: ["beat-001"],
+        sourceText: "少女推门。",
+        duration: 8,
+      }],
+    }), draft.beats.map((beat) => beat.id))).toThrow("未覆盖剧情节点：beat-002");
   });
 });
